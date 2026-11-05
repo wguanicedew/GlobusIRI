@@ -1,0 +1,160 @@
+# GlobusIRI site configuration (example, shipped with the package).
+# `globusiri init` copies it to <WORK_DIR>/config/sites.yaml.
+#
+# WORK_DIR = $GLOBUSIRI_WORK_DIR if set, else the per-user globusiri data dir
+#            (platformdirs.user_data_dir("globusiri"), e.g. ~/.local/share/globusiri).
+# `globusiri paths` prints the resolved locations.
+#
+# Local files are found by convention under WORK_DIR, so this file needs no local paths:
+#   <WORK_DIR>/config/sites.yaml
+#   <WORK_DIR>/tokens/{iri,https,e2e}/...   (0700; never commit)
+#   <WORK_DIR>/logs/
+#   <WORK_DIR>/runs/<run_id>/
+#   <WORK_DIR>/templates/                   (user templates; override packaged ones)
+#   <WORK_DIR>/inputs/                      (files uploaded with each job)
+#   <WORK_DIR>/jobs/                        (job files, e.g. perlmutter_example_job.yaml)
+#
+# This file describes SITES and is not edited per job. Per-job settings (resources,
+# template, inputs, staging) go in a job file passed to `globusiri job submit` / `run`.
+# Any relative local path below is resolved against WORK_DIR. ${VAR} is expanded.
+# This file never contains token values.
+#
+# Remote paths (remote.*, e2e.base_path) are HPC *mount* paths; they are translated to
+# Globus paths by the `path_map` of the collection being accessed.
+#
+# Three independent tokens: iri (per facility), https (per site collection),
+# e2e (one Transfer token). They are not interchangeable.
+
+defaults:
+  globus_client_id: 165ae151-86aa-430a-8251-ce565e51998f   # USATLAS_HPC_Globus native app
+  refresh_min_lifetime: 6h                                  # `refresh` is a no-op if token lives longer
+  retries: 3
+
+# --------------------------------------------------------------------------
+# Globus E2E (Transfer) token + endpoints: shared by all sites
+# tokens: <WORK_DIR>/tokens/e2e/{refresh,access}.yaml
+# --------------------------------------------------------------------------
+e2e:
+  panda_secret_key: USATLAS_HPC_TRANSFER_TOKEN
+  sync_level: exists          # exists | size | mtime | checksum
+  verify_checksum: true
+  max_files_per_task: 1000
+  poll_interval: 30           # seconds
+  timeout: 24h
+  # label -> endpoint. Give `id`, `query` (+ `pick`), or both; with both, login fails if
+  # the search result differs from `id`. data_access: request data_access/https consent.
+  # path_map: HPC mount prefix -> Globus path prefix for this endpoint (omit if identical).
+  endpoints:
+    BNL_dCache:
+      id: 12782fb1-a599-4f18-b0fb-2e849681e214
+      query: SDCC                 # as in generate_transfer_token_to_panda.py ENDPOINT_QUERIES
+      pick: 0
+      data_access: true
+    NERSC:
+      id: 9d6d994a-6d04-11e5-ba46-22000b92c6ec
+      query: NERSC DTN
+      pick: 0
+      data_access: true
+      path_map: {}                # Globus path == Perlmutter mount path
+    Crux:
+      id: 05d2c76a-e867-4f67-aa57-76edeb0beda0
+      query: alcf#dtn_eagle
+      pick: 0
+      data_access: true
+      path_map:
+        /lus/eagle/projects: /    # /lus/eagle/projects/ATLAS_workflow_ALCF/x -> /ATLAS_workflow_ALCF/x
+
+# --------------------------------------------------------------------------
+# Sites
+# --------------------------------------------------------------------------
+sites:
+
+  NERSC_Perlmutter:
+    facility: nersc
+    iri:
+      # tokens: <WORK_DIR>/tokens/iri/nersc.{refresh.json,access.yaml}
+      base_url: https://api.iri.nersc.gov
+      resource_id: 59e80c79-4dfd-4c53-9c07-7405685fcd37
+      panda_secret_key: NERSC_IRI_ACCESS   # JSON payload (bare-token secrets still readable)
+      validate: true
+      debug: true
+
+    remote:
+      work_dir: /global/cfs/cdirs/m2616/harvester_workdir
+      work_dir_resource_id: null        # null -> iri.resource_id
+      log_dir: /global/cfs/cdirs/m2616/www/PanDA_logs/IRI
+      log_dir_resource_id: null         # null -> work_dir_resource_id
+      upload_method: iri                # iri | globus_https
+
+    # Facility API capabilities: fields this IRI backend rejects in job_spec.resources.
+    unsupported_resource_fields: []
+
+    # Optional per-site defaults for job files (see jobs/*.yaml); any job file overrides them.
+    job_defaults:
+      project: m2616
+      constraint: cpu
+
+    https:
+      # tokens: <WORK_DIR>/tokens/https/NERSC_Perlmutter.{refresh,access}.yaml
+      # The collection is discovered at `https login`; its collection_id + https_server are
+      # stored in the token files and read from there at runtime.
+      collection_query: NERSC DTN
+      collection_pick: 0
+      collection_id: null               # optional pin; skips the search
+      panda_secret_key: NERSC_HTTPS_TOKEN
+      path_map: {}                      # Globus path == Perlmutter mount path
+
+    e2e:
+      endpoint: NERSC                   # label in e2e.endpoints
+      base_path: /global/cfs/cdirs/m2616/harvester_workdir/rucio
+      stagein:
+        src_endpoint: BNL_dCache
+        src_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/
+      stageout:
+        dst_endpoint: BNL_dCache
+        dst_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/
+
+  ALCF_CRUX:
+    facility: alcf
+    iri:
+      # tokens: <WORK_DIR>/tokens/iri/alcf.{refresh.json,access.yaml}
+      base_url: https://api.alcf.anl.gov
+      resource_id: 8b9b42f7-572a-4909-8472-a0453436304c
+      panda_secret_key: ALCF_IRI_ACCESS
+      validate: true
+      debug: true
+
+    remote:
+      work_dir: /lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs
+      work_dir_resource_id: 1c3ad9d4-2e91-42bc-becb-72b1fde1235c   # Eagle filesystem
+      log_dir: /lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs
+      log_dir_resource_id: null
+      upload_method: globus_https
+
+    # ALCF's PBS-backed IRI returns HTTP 501 for these.
+    unsupported_resource_fields: [process_count, processes_per_node, cpu_cores_per_process]
+
+    job_defaults:
+      project: ATLAS_workflow_ALCF
+      custom_attributes:
+        filesystems: home:eagle
+
+    https:
+      # tokens: <WORK_DIR>/tokens/https/ALCF_CRUX.{refresh,access}.yaml
+      # Different collection from the E2E endpoint `Crux`; discovered at `https login`.
+      collection_query: alcf#dtn_eagle
+      collection_pick: 0
+      collection_id: null
+      panda_secret_key: ALCF_CRUX_HTTPS_TOKEN
+      path_map:
+        /lus/eagle/projects: /          # .../IRI_workdir/jobs -> /ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs
+
+    e2e:
+      endpoint: Crux
+      base_path: /lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/rucio  # -> /ATLAS_workflow_ALCF/... via endpoints.Crux.path_map
+      stagein:
+        src_endpoint: BNL_dCache
+        src_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/
+      stageout:
+        dst_endpoint: BNL_dCache
+        dst_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/

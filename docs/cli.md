@@ -1,0 +1,236 @@
+# CLI reference
+
+## Install
+
+```bash
+pip install "globusiri[panda]"            # drop [panda] if PanDA secret sync is not needed
+export GLOBUSIRI_WORK_DIR=/path/to/globusiri_work   # optional, see configuration.md#work_dir
+globusiri init                            # create WORK_DIR layout, config/sites.yaml, and jobs/*_example_job.yaml
+globusiri paths                           # show resolved WORK_DIR, config, tokens, logs
+```
+
+`init [--force] [--sites NERSC_Perlmutter,ALCF_CRUX]` never overwrites an existing
+`sites.yaml` or job file unless `--force` is given.
+
+## Usage
+
+```
+globusiri [--config PATH] [--debug] <group> <command> [SITE] [options]
+```
+
+Every command accepts `--config` and `--debug`. Commands that operate on a remote site take
+`SITE`, which is a key under `sites:` such as `NERSC_Perlmutter` or `ALCF_CRUX`. Exit codes are
+listed in [design.md §9](design.md#9-errors-and-exit-codes).
+
+## Token commands
+
+The `iri`, `https`, and `e2e` groups share the same token subcommands.
+
+| Command | Where | What it does |
+|---|---|---|
+| `login SITE [--force] [--prompt-login]` | token host, interactive | Opens a Globus consent URL, reads the auth code, and writes the refresh token |
+| `refresh SITE [--min-lifetime 6h] [--upload-to-panda] [--no-validate]` | token host, cron | Exchanges the refresh token for an access token and writes the access token file. Never prompts |
+| `upload_to_panda SITE` | token host | Stores the access token file as the PanDA user secret |
+| `download_from_panda SITE` | runtime host, cron | Fetches the PanDA user secret and writes the access token file |
+| `status SITE` | any | Offline only: shows whether the files exist, their permissions, and the time until expiry. Never prints a token. For live checks, use [`globusiri validate`](#validate-tokens) |
+
+For `e2e`, `SITE` is optional and ignored, because the Transfer token is shared by all sites.
+`--all` runs the command for every site.
+
+```bash
+# One-time, interactive
+globusiri iri   login NERSC_Perlmutter
+globusiri iri   login ALCF_CRUX
+globusiri https login NERSC_Perlmutter
+globusiri https login ALCF_CRUX
+globusiri e2e   login
+
+# Inspect
+globusiri iri status --all
+globusiri validate              # live check of every token for every site
+```
+
+## Validate tokens
+
+```
+globusiri validate [SITE...] [--job JOB_FILE] [--kinds iri,https,e2e] [--offline]
+                   [--write-test] [--panda] [--min-lifetime 6h] [--strict] [--json]
+```
+
+This command validates all three token kinds (IRI, HTTPS, and E2E), each against its own
+service. It never prints a token.
+
+**What gets checked:**
+
+- **With no options**, it checks every token kind for every site. This is the mode for cron
+  and for monitoring the deployment.
+- **`--job JOB_FILE`** checks only the tokens that job needs, at the job's site (see
+  [configuration.md: Tokens a job requires](configuration.md#tokens-a-job-requires)).
+  - IRI is always checked.
+  - HTTPS is checked when the job uploads or downloads over HTTPS.
+  - E2E is checked only when the job has `staging.e2e.enabled: true`. A job without E2E
+    transfers never fails because of the E2E token.
+- **`SITE...`** limits the check to those sites.
+- **`--kinds`** limits it to some token kinds. Combined with `--job`, it narrows that job's
+  required kinds further and cannot add kinds.
+
+The output lists every kind that was skipped and why, for example
+`e2e  skipped  job does not enable e2e`.
+
+| Kind | Offline checks (always) | Live checks (skipped with `--offline`) |
+|---|---|---|
+| `iri` | Access file exists and has mode 0600; not expired; lifetime ≥ `--min-lifetime`; `base_url` and `resource_id` match `sites.yaml`; refresh file present on the token host | NERSC: `GET /api/v1/account/projects`. ALCF: filesystem `ls` on Home. Then IRI `stat` on `remote.work_dir`, which checks the token can reach the site's work area |
+| `https` | Same file checks; `client_id`, `collection_id`, and `https_server` present; `collection_id` matches a pinned `https.collection_id` if one is set | `GET` on `remote.work_dir` (mapped through `https.path_map`) at `https_server`. A 401 or 403 means a token or consent problem; a 404 means a path or `path_map` problem. `--write-test` also does a `PUT` and then a `GET` of `<work_dir>/.globusiri_validate` (a small file that is overwritten each time) |
+| `e2e` | Same file checks; `client_id` present | `get_endpoint` for each endpoint in `e2e.endpoints` (checks that the token is accepted and the `id` exists). `operation_ls` on each site's `e2e.base_path` (mapped through that endpoint's `path_map`) and on the storage `src_path`/`dst_path`. `ConsentRequired` names the endpoint that is missing `data_access` consent |
+
+- **`--panda`.** Also reads each PanDA secret and compares its `expires_at` with the local
+  file. It warns when they differ, which means `upload_to_panda` or `download_from_panda`
+  has not run since the last refresh. This needs `globusiri[panda]`.
+- **Results.** Each check reports `OK`, `WARN`, or `FAIL`, with a one-line reason and, where
+  one applies, a fix. For example: `run: globusiri https login ALCF_CRUX`.
+  - `WARN` covers expiry within `--min-lifetime`, loose file permissions, and a stale PanDA
+    secret.
+  - `FAIL` covers a missing or expired token, a rejected token, missing consent, and an
+    unreachable path.
+- **Exit code.** `0` if nothing failed (and, with `--strict`, nothing warned). Otherwise `7`.
+  A configuration error exits `2`.
+- **`--json`.** Prints one object per check: `site`, `kind`, `check`, `status`, `detail`,
+  `expires_at`. This is meant for monitoring.
+
+```
+$ globusiri validate
+SITE              KIND   CHECK            STATUS  DETAIL
+NERSC_Perlmutter  iri    token file       OK      expires in 41h
+NERSC_Perlmutter  iri    api              OK      GET account/projects -> 200
+NERSC_Perlmutter  iri    work_dir         OK      stat /global/cfs/cdirs/m2616/harvester_workdir
+NERSC_Perlmutter  https  token file       OK      expires in 45h
+NERSC_Perlmutter  https  read work_dir    OK      GET -> 200
+ALCF_CRUX         https  read work_dir    FAIL    GET -> 403; run: globusiri https login ALCF_CRUX
+-                 e2e    endpoint Crux    OK      ls /ATLAS_workflow_ALCF/usatlas/IRI_workdir/rucio
+-                 e2e    endpoint BNL     FAIL    ConsentRequired data_access; run: globusiri e2e login --force
+```
+
+### Cron (replaces `harvester_HPC/cron.sh`)
+
+Cron does not load your shell environment. Set `GLOBUSIRI_WORK_DIR` in the crontab, and
+call `globusiri` by its full path inside the venv.
+
+Single-host mode, where the token host is also the runtime host:
+
+```cron
+GLOBUSIRI_WORK_DIR=/path/to/globusiri_work
+PATH=/path/to/venv/bin:/usr/bin:/bin
+# m h dom mon dow  command
+0 */2 * * *  globusiri iri   refresh --all --min-lifetime 6h --upload-to-panda
+5 */2 * * *  globusiri https refresh --all --min-lifetime 6h --upload-to-panda
+10 */2 * * * globusiri e2e   refresh       --min-lifetime 6h --upload-to-panda
+30 */2 * * * globusiri validate --json >> $GLOBUSIRI_WORK_DIR/logs/validate.jsonl || <alert command>
+```
+
+Split mode adds this on the runtime (Harvester) host, which uses its own WORK_DIR:
+
+```cron
+GLOBUSIRI_WORK_DIR=/path/to/runtime_work
+20 * * * *   globusiri iri   download_from_panda --all
+21 * * * *   globusiri https download_from_panda --all
+22 * * * *   globusiri e2e   download_from_panda
+```
+
+## IRI job commands
+
+```bash
+globusiri job submit [SITE] --job JOB_FILE [--run-id ID]
+                     [--set key=value]... [--input NAME=LOCAL]... [--dry-run]
+globusiri job status SITE JOB_ID [--wait] [--interval 60] [--json]
+globusiri job cancel SITE JOB_ID
+globusiri job list   SITE [--historical] [--limit N]
+```
+
+The job file supplies the template, resources, and inputs (see
+[configuration.md: Job files](configuration.md#job-files)). `SITE` defaults to the job file's
+`site`. `--set` overrides one key for this submission only, for example
+`--set resources.n_node=4 --set resources.duration=2h`. The job file itself is never modified.
+
+`job submit` does the following:
+
+1. Merges the site's `job_defaults`, the job file, and any `--set` values, then saves the result to `runs/<run_id>/job.yaml`.
+2. Renders the template with Harvester placeholder names.
+3. Runs IRI `mkdir -p` on `<work_dir>/<run>` and `<log_dir>/<run>`.
+4. Uploads `executable_batch` plus the job's `inputs` using `remote.upload_method`.
+5. Runs `chmod 0755` on `executable_batch`.
+6. Submits the job and prints the job ID.
+
+`--dry-run` prints the rendered script and `job_spec` without contacting IRI.
+
+`job status --wait` polls until the job reaches a terminal state. It exits with code 0 for
+`finished` and 6 for `failed` or `cancelled`.
+
+## IRI filesystem helpers
+
+```bash
+globusiri fs ls    SITE PATH [--resource-id ID]
+globusiri fs stat  SITE PATH
+globusiri fs mkdir SITE PATH [--parents]
+globusiri fs chmod SITE PATH MODE
+```
+
+## Globus HTTPS staging
+
+`stagein` uploads to the HPC and `stageout` downloads from it. Remote paths are filesystem
+paths and are translated through `path_map`.
+
+```bash
+globusiri https stagein  SITE LOCAL_FILE... --to REMOTE_DIR [--mkdir] [--executable NAME]
+globusiri https stageout SITE REMOTE_FILE... --to LOCAL_DIR [--skip-existing]
+globusiri https stageout SITE --job JOB_ID --to LOCAL_DIR      # stdout/stderr of a job
+```
+
+`stageout --job` finds stdout and stderr in the job's `admincomment` (`stdoutPath` and
+`stderrPath`). If they are not there, it uses `<log_dir>/<run>/<run>_std{out,err}.txt`.
+
+## Globus E2E staging
+
+```bash
+globusiri e2e stagein  SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
+                            [--src-endpoint LABEL] [--sync-level exists] [--no-wait]
+globusiri e2e stageout SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
+                            [--dst-endpoint LABEL] [--no-wait]
+globusiri e2e task     TASK_ID [--wait] [--failures]
+globusiri e2e cancel   TASK_ID
+```
+
+A manifest has one `SRC_PATH DST_PATH` pair per line. Lines starting with `#` are ignored.
+With `--rucio`, paths follow Rucio's deterministic layout under `stagein.src_path` and
+`e2e.base_path`.
+
+## End-to-end run
+
+```bash
+globusiri run [SITE] --job JOB_FILE
+              [--stagein-manifest in.txt] [--stageout-manifest out.txt] [--no-validate]
+              [--set key=value]... [--run-id ID] [--no-wait]
+globusiri run --resume RUN_ID
+```
+
+`run` performs these steps in order: E2E stage-in, then HTTPS upload, then IRI submit, then
+IRI monitor, then HTTPS download of stdout/stderr, then E2E stage-out. Progress is saved in
+`<WORK_DIR>/runs/<RUN_ID>/state.json`. If `--run-id` is not given, a run ID is generated.
+With `--resume`, steps already marked `done` are skipped.
+
+Before any step runs, `run` validates the tokens the job requires, exactly as
+`validate --job` does. If any check fails, the run stops before anything is transferred or
+submitted. `--no-validate` skips this check.
+
+`--stagein-manifest` and `--stageout-manifest` override the job file's E2E manifests for this
+run only. They also turn on `staging.e2e.enabled` for the run, so the E2E token is then
+validated as well.
+
+### Example
+
+```bash
+globusiri run --job perlmutter_example_job.yaml \
+  --set resources.n_node=2 \
+  --stagein-manifest inputs.txt \
+  --stageout-manifest outputs.txt \
+  --run-id test1                 # state in <WORK_DIR>/runs/test1/
+```

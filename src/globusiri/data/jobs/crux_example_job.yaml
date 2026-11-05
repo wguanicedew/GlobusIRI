@@ -1,0 +1,49 @@
+# GlobusIRI job file (example) for ALCF Crux.
+# `globusiri init` copies it to <WORK_DIR>/jobs/. Use it with:
+#   globusiri job submit --job crux_example_job.yaml
+#   globusiri run        --job crux_example_job.yaml
+# Merge order (later wins): sites.<site>.job_defaults < this file < CLI --set key=value
+# Note: sites.ALCF_CRUX.unsupported_resource_fields still drops process_count,
+# processes_per_node and cpu_cores_per_process from the submitted job_spec.
+
+site: ALCF_CRUX
+name: crux-example
+
+template_file: crux_iri_submit_template.sh
+template_vars: {}
+
+resources:
+  project: ATLAS_workflow_ALCF
+  queue: debug
+  constraint: null
+  n_node: 1
+  n_core_per_node: 256
+  n_process_per_node: 4
+  gpu_cores_per_process: 0
+  memory: null
+  duration: 30m
+  launcher: null
+  exclusive_node_use: true
+  reservation_id: null
+  custom_attributes:
+    filesystems: home:eagle
+    place: scatter
+
+inputs:
+  pandaTokenFilename: inputs/panda_token
+  pandaTokenKeyPath: inputs/panda_token_key
+  x509UserProxy: ${X509_USER_PROXY}
+panda_auth_origin: atlas.pilot
+
+staging:
+  e2e:
+    enabled: false              # true -> needs the e2e token; validate/run check it
+    stagein:
+      manifest: null
+      rucio: []
+    stageout:
+      manifest: null
+      rucio: []
+  https_stageout:
+    stdout_stderr: true
+    files: []

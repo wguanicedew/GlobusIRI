@@ -1,0 +1,52 @@
+# GlobusIRI job file (example) for NERSC Perlmutter.
+# `globusiri init` copies it to <WORK_DIR>/jobs/. Use it with:
+#   globusiri job submit --job perlmutter_example_job.yaml
+#   globusiri run        --job perlmutter_example_job.yaml
+# Merge order (later wins): sites.<site>.job_defaults < this file < CLI --set key=value
+# Relative local paths resolve against WORK_DIR; ${VAR} is expanded.
+
+site: NERSC_Perlmutter          # key in sites.yaml; CLI SITE argument overrides
+name: perlmutter-example        # IRI job name prefix; run_id is appended
+
+template_file: perlmutter_iri_submit_template.sh   # <WORK_DIR>/templates/, else packaged
+template_vars: {}               # extra placeholders for the template, e.g. {pandaQueueName: NERSC_Perlmutter_IRI}
+
+resources:
+  project: m2616
+  queue: debug
+  constraint: cpu
+  n_node: 1
+  n_core_per_node: 256
+  n_process_per_node: 4
+  gpu_cores_per_process: 0      # omitted from job_spec when 0
+  memory: null                  # bytes; null = not requested
+  duration: 30m
+  launcher: null                # null | single | mpirun | srun | aprun | jsrun
+  exclusive_node_use: true
+  reservation_id: null
+  custom_attributes: {}         # merged over site job_defaults.custom_attributes
+
+# Local files uploaded into <remote.work_dir>/<run_id>/ as <remote_name>.
+# executable_batch (the rendered template) is always uploaded and chmod 0755.
+inputs:
+  pandaTokenFilename: inputs/panda_token
+  pandaTokenKeyPath: inputs/panda_token_key
+  x509UserProxy: ${X509_USER_PROXY}
+panda_auth_origin: atlas.pilot
+
+# Which tokens this job needs (used by `globusiri validate --job` and by `run`):
+#   iri   - always
+#   https - if the site's remote.upload_method is globus_https, or https_stageout is non-empty
+#   e2e   - only if staging.e2e.enabled is true
+staging:
+  e2e:
+    enabled: false              # true -> this job moves data with Globus E2E Transfer
+    stagein:                    # used only when enabled
+      manifest: null            # file of "SRC DST" lines
+      rucio: []                 # e.g. [mc23_13p6TeV:EVNT.12345._000001.pool.root.1]
+    stageout:
+      manifest: null
+      rucio: []
+  https_stageout:               # downloaded after the job ends, into <WORK_DIR>/runs/<run_id>/
+    stdout_stderr: true
+    files: []                   # extra remote files, relative to <remote.work_dir>/<run_id>/

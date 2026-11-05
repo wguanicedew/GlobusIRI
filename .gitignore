@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+# local WORK_DIR content: never commit tokens or run state
+tokens/
+runs/
+logs/
+sites.yaml
