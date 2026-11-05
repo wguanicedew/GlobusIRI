@@ -1,0 +1,26 @@
+"""Build clients for a site from the conventional token files."""
+
+from .clients.http import TokenSource
+from .clients.https import GlobusHttpsClient
+from .clients.iri import IriClient
+from .clients.transfer import TransferWrapper
+from .tokens import E2ETokenManager, HttpsTokenManager, IriTokenManager
+
+
+def iri_client(config, site, *, debug=None):
+    mgr = IriTokenManager(config, site)
+    source = TokenSource(mgr.access_file, label=f"IRI ({site.facility})", fix=mgr.fix("refresh"))
+    return IriClient(site.base_url, source, resource_id=site.resource_id, retries=config.retries,
+                     debug=site.iri_debug if debug is None else debug)
+
+
+def https_client(config, site, *, debug=None):
+    mgr = HttpsTokenManager(config, site)
+    source = TokenSource(mgr.access_file, label=f"HTTPS ({site.name})", fix=mgr.fix("refresh"))
+    return GlobusHttpsClient(source, site.https_path_map, retries=config.retries,
+                             debug=site.iri_debug if debug is None else debug, https_server=site.https_server)
+
+
+def transfer(config):
+    mgr = E2ETokenManager(config)
+    return TransferWrapper(TokenSource(mgr.access_file, label="E2E Transfer", fix=mgr.fix("refresh")))

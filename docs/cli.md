@@ -1,5 +1,8 @@
 # CLI reference
 
+Every command below is also available from Python as a method of `globusiri.GlobusIRI`
+(see [api.md](api.md)).
+
 ## Install
 
 ```bash
@@ -28,7 +31,7 @@ The `iri`, `https`, and `e2e` groups share the same token subcommands.
 
 | Command | Where | What it does |
 |---|---|---|
-| `login SITE [--force] [--prompt-login]` | token host, interactive | Opens a Globus consent URL, reads the auth code, and writes the refresh token |
+| `login SITE [--force] [--prompt-login] [--import FILE]` | token host, interactive | Opens a Globus consent URL, reads the auth code, and writes the refresh token. `--import` takes an existing refresh token file instead (e.g. `~/.globus/nersc_auth_tokens.json`, or the old `*_refresh_token.yaml` / `usatlas_hpc_globus_transfer_refresh.yaml`), for migrating without logging in again |
 | `refresh SITE [--min-lifetime 6h] [--upload-to-panda] [--no-validate]` | token host, cron | Exchanges the refresh token for an access token and writes the access token file. Never prompts |
 | `upload_to_panda SITE` | token host | Stores the access token file as the PanDA user secret |
 | `download_from_panda SITE` | runtime host, cron | Fetches the PanDA user secret and writes the access token file |
@@ -140,10 +143,11 @@ GLOBUSIRI_WORK_DIR=/path/to/runtime_work
 
 ```bash
 globusiri job submit [SITE] --job JOB_FILE [--run-id ID]
-                     [--set key=value]... [--input NAME=LOCAL]... [--dry-run]
+                     [--set key=value]... [--input NAME=LOCAL]... [--dry-run] [--no-validate]
 globusiri job status SITE JOB_ID [--wait] [--interval 60] [--json]
-globusiri job cancel SITE JOB_ID
-globusiri job list   SITE [--historical] [--limit N]
+globusiri job cancel  SITE JOB_ID
+globusiri job list    SITE [--historical] [--limit N]
+globusiri job cleanup SITE RUN_ID
 ```
 
 The job file supplies the template, resources, and inputs (see
@@ -160,19 +164,32 @@ The job file supplies the template, resources, and inputs (see
 5. Runs `chmod 0755` on `executable_batch`.
 6. Submits the job and prints the job ID.
 
-`--dry-run` prints the rendered script and `job_spec` without contacting IRI.
+`--dry-run` prints the rendered script and `job_spec` without contacting IRI, and leaves no run
+directory behind. Without `--dry-run`, `job submit` first validates the IRI (and, if needed,
+HTTPS) token, unless `--no-validate` is given. State is kept in `<WORK_DIR>/runs/<run_id>/`.
 
 `job status --wait` polls until the job reaches a terminal state. It exits with code 0 for
 `finished` and 6 for `failed` or `cancelled`.
 
+`job cleanup` removes a run's remote directory, `<remote.work_dir>/<RUN_ID>`, with IRI `rm`. If
+`remote.log_dir` is different from `remote.work_dir`, it also removes `<remote.log_dir>/<RUN_ID>`.
+A directory that is already gone is reported as `already gone`, not as an error. Download
+stdout and stderr first (`https stageout --job-id`), because they are removed with the run
+directory.
+
 ## IRI filesystem helpers
 
 ```bash
-globusiri fs ls    SITE PATH [--resource-id ID]
+globusiri fs ls    SITE PATH [--resource-id ID] [--all]
 globusiri fs stat  SITE PATH
 globusiri fs mkdir SITE PATH [--parents]
 globusiri fs chmod SITE PATH MODE
+globusiri fs rm    SITE PATH [--force]
 ```
+
+`fs rm` removes a file or directory with IRI `rm`. To protect against typos, `PATH` must be
+below the site's `remote.work_dir`, `remote.log_dir` or `e2e.base_path`. `--force` removes the
+restriction, but `/` is always refused.
 
 ## Globus HTTPS staging
 
@@ -181,12 +198,14 @@ paths and are translated through `path_map`.
 
 ```bash
 globusiri https stagein  SITE LOCAL_FILE... --to REMOTE_DIR [--mkdir] [--executable NAME]
-globusiri https stageout SITE REMOTE_FILE... --to LOCAL_DIR [--skip-existing]
-globusiri https stageout SITE --job JOB_ID --to LOCAL_DIR      # stdout/stderr of a job
+globusiri https stageout SITE REMOTE_FILE... --to LOCAL_DIR [--overwrite]
+globusiri https stageout SITE --job-id JOB_ID [--run-id RUN_ID] --to LOCAL_DIR   # stdout/stderr of a job
 ```
 
-`stageout --job` finds stdout and stderr in the job's `admincomment` (`stdoutPath` and
-`stderrPath`). If they are not there, it uses `<log_dir>/<run>/<run>_std{out,err}.txt`.
+Files that already exist locally are skipped unless `--overwrite` is given.
+`stageout --job-id` finds stdout and stderr in the job's `admincomment` (`stdoutPath` and
+`stderrPath`). If they are not there, it uses `<log_dir>/<RUN_ID>/<RUN_ID>_std{out,err}.txt`,
+which needs `--run-id`.
 
 ## Globus E2E staging
 
@@ -195,25 +214,48 @@ globusiri e2e stagein  SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
                             [--src-endpoint LABEL] [--sync-level exists] [--no-wait]
 globusiri e2e stageout SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
                             [--dst-endpoint LABEL] [--no-wait]
+globusiri e2e cleanup  SITE (--manifest FILE | --rucio SCOPE:NAME... | PATH...)
+                            [--force] [--dry-run] [--no-wait]
 globusiri e2e task     TASK_ID [--wait] [--failures]
 globusiri e2e cancel   TASK_ID
 ```
 
 A manifest has one `SRC_PATH DST_PATH` pair per line. Lines starting with `#` are ignored.
-With `--rucio`, paths follow Rucio's deterministic layout under `stagein.src_path` and
-`e2e.base_path`.
+`--rucio SCOPE:NAME` is used only to generate the Rucio deterministic RSE path, under
+`stagein.src_path` (or `stageout.dst_path`) on the storage side and `e2e.base_path` on the HPC
+side. It does not contact Rucio: it does not look up replicas, check that the file exists on the
+RSE, expand datasets, or register files after stage-out.
+
+`e2e cleanup` removes files that a stage-in wrote to the HPC. It submits a Globus delete task
+on the site's HPC endpoint, using the E2E token. It takes the same inputs as `stagein`:
+
+- `--manifest FILE`: the stage-in manifest. Its `DST` column is deleted.
+- `--rucio SCOPE:NAME`: the Rucio deterministic path under `e2e.base_path` is deleted.
+- `PATH...`: HPC file paths (mount paths).
+
+Paths are translated through the HPC endpoint's `path_map`. They must be below the site's
+`remote.work_dir`, `remote.log_dir` or `e2e.base_path`, unless `--force` is given. Only files are
+deleted (the delete is not recursive), and files that are already missing are ignored.
+`--dry-run` prints the Globus paths without deleting anything.
+
+Rucio paths are deterministic, so another job may be reading the same file under
+`e2e.base_path`. Clean them up only when no other job on the site needs them.
 
 ## End-to-end run
 
 ```bash
 globusiri run [SITE] --job JOB_FILE
               [--stagein-manifest in.txt] [--stageout-manifest out.txt] [--no-validate]
-              [--set key=value]... [--run-id ID] [--no-wait]
-globusiri run --resume RUN_ID
+              [--set key=value]... [--run-id ID] [--no-wait] [--interval 60]
+globusiri run --resume RUN_ID [--no-wait] [--no-validate]
 ```
 
 `run` performs these steps in order: E2E stage-in, then HTTPS upload, then IRI submit, then
-IRI monitor, then HTTPS download of stdout/stderr, then E2E stage-out. Progress is saved in
+IRI monitor, then HTTPS download of stdout/stderr, then E2E stage-out, then cleanup.
+Cleanup is off by default. The job file's `cleanup` section turns it on (see
+[configuration.md: Job files](configuration.md#job-files)). It runs only when the job finished
+successfully and the downloads and stage-out did not fail. Otherwise every file is kept for
+debugging, and you can remove them later with `job cleanup` and `e2e cleanup`. Progress is saved in
 `<WORK_DIR>/runs/<RUN_ID>/state.json`. If `--run-id` is not given, a run ID is generated.
 With `--resume`, steps already marked `done` are skipped.
 

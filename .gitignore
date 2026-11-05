@@ -1,11 +1,12 @@
 __pycache__/
 *.pyc
 *.egg-info/
-build/
-dist/
-.venv/
-# local WORK_DIR content: never commit tokens or run state
-tokens/
-runs/
-logs/
-sites.yaml
+/build/
+/dist/
+/.venv/
+.pytest_cache/
+# a WORK_DIR accidentally created at the repo root: never commit tokens or run state
+/tokens/
+/runs/
+/logs/
+/config/sites.yaml

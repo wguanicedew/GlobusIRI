@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "globusiri"
+version = "0.1.0"
+description = "Submit and monitor HPC jobs through the IRI API and move files with Globus (HTTPS and Transfer)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Wen Guan", email = "wen.guan@cern.ch" }]
+dependencies = [
+    "globus-sdk>=4,<5",
+    "requests>=2.25",
+    "PyYAML>=5.4",
+    "platformdirs>=3",
+]
+
+[project.optional-dependencies]
+panda = ["panda-client"]
+test = ["pytest>=7"]
+
+[project.scripts]
+globusiri = "globusiri.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/globusiri"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/globusiri", "docs", "tests", "README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -93,6 +93,8 @@ token_files:
 | `resource_id` | Compute resource | `iri_resource_id` |
 | `panda_secret_key` | Name of the PanDA secret | `--panda_secret_key` |
 | `validate` | Make a validation call after `refresh` | `--validate-iri` |
+| `validate_url` | Optional. Overrides the validation URL (default: NERSC `account/projects`; ALCF filesystem `ls` on Home) | `--iri-validate-url` |
+| `validate_resource_id`, `validate_path` | Optional. ALCF only: resource and path for the default `ls` (default: Home, `/home/$USER/`) | `--alcf-validate-resource-id`, `--alcf-validate-path` |
 | `debug` | Print redacted request traces | `iri_debug` |
 
 ### `remote`
@@ -144,6 +146,7 @@ files (see [Job files](#job-files)).
 |---|---|---|
 | `collection_query`, `collection_pick` | `endpoint_search` query and index used by `https login` to discover the HTTPS collection | `SITE_QUERIES` |
 | `collection_id` | Optional pin that skips the search. The collection is usually not the same as the site's E2E endpoint (it differs for ALCF). The discovered `collection_id` and `https_server` are stored in the token files, and the runtime reads them from there | — |
+| `https_server` | Optional. Pins the HTTPS server address. Together with `collection_id`, it lets `https login` skip the first (search) login | — |
 | `path_map` | Map from HPC mount paths to this collection's Globus paths | `globus_upload_dir` / `globus_download_dir` |
 | `panda_secret_key` | For example, `NERSC_HTTPS_TOKEN` | `--panda_secret_key` |
 
@@ -203,6 +206,8 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 | `staging.e2e.stagein.manifest`, `.rucio` | Transfer into the HPC before submission. Used only when `enabled` is true | preparator |
 | `staging.e2e.stageout.manifest`, `.rucio` | Transfer out of the HPC after the job ends. Used only when `enabled` is true | stager |
 | `staging.https_stageout.stdout_stderr`, `.files` | Files to download after the job ends, into `<WORK_DIR>/runs/<run_id>/` | monitor `download_logs` |
+| `cleanup.remote_run_dir` | `true` makes `run` remove `<remote.work_dir>/<run_id>` (and `<remote.log_dir>/<run_id>`) with IRI `rm` at the end. Default `false` | sweeper |
+| `cleanup.e2e_stagein` | `true` makes `run` delete the E2E stage-in files on the HPC with a Globus delete task at the end. Used only when `staging.e2e.enabled` is true. Default `false` | — |
 
 ### Tokens a job requires
 
@@ -217,6 +222,10 @@ and `globusiri run` check only those tokens.
 
 A job file that has E2E manifests or Rucio files while `enabled: false` is rejected as a
 configuration error (exit 2), so that data is never silently left untransferred.
+
+`run` cleans up only after the job finished successfully and the HTTPS download and E2E
+stage-out did not fail. A failed or cancelled run keeps its files so you can debug it. You can
+remove them later with `globusiri job cleanup` and `globusiri e2e cleanup`.
 
 ## Token file formats
 

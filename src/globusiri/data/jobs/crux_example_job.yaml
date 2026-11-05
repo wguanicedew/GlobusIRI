@@ -47,3 +47,9 @@ staging:
   https_stageout:
     stdout_stderr: true
     files: []
+
+# Remove files on the HPC at the end of `globusiri run`. This happens only after the job
+# finished successfully and the downloads/stage-out did not fail.
+cleanup:
+  remote_run_dir: false         # IRI rm of <remote.work_dir>/<run_id> (and <remote.log_dir>/<run_id>)
+  e2e_stagein: false            # Globus delete of the stage-in files (needs staging.e2e.enabled)

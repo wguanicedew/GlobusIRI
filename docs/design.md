@@ -6,7 +6,7 @@ GlobusIRI is a standalone Python package and CLI (`globusiri`) for running batch
 DOE HPC facilities through the **IRI API**, with files moved through **Globus**:
 
 - **IRI** submits, monitors, and cancels batch jobs, and runs filesystem operations
-  (`mkdir`, `chmod`, `ls`, `stat`).
+  (`mkdir`, `chmod`, `ls`, `stat`, `rm`).
 - **Globus HTTPS** moves small files between the client host and the HPC: run scripts and
   credentials go up, stdout/stderr come back.
 - **Globus E2E** (endpoint-to-endpoint Transfer) moves bulk data between a storage endpoint
@@ -202,9 +202,11 @@ src/globusiri/
   jobs.py              # JobSpec builder, submit, status (state mapping), cancel, template render
   staging/
     https.py           # stagein (upload) / stageout (download) of small files
-    e2e.py             # stagein / stageout Transfer tasks, wait, per-file results
+    e2e.py             # stagein / stageout Transfer tasks, cleanup delete tasks, wait
+  cleanup.py           # IRI rm of run directories, path safety checks
   workflow.py          # run orchestration + persisted run state
-  cli.py               # `globusiri` entry point
+  api.py               # GlobusIRI: the Python API, one method per CLI command
+  cli.py               # `globusiri` entry point: argument parsing + output over api.py
   data/
     sites.example.yaml
     jobs/perlmutter_example_job.yaml
@@ -212,6 +214,11 @@ src/globusiri/
     templates/perlmutter_iri_submit_template.sh
     templates/crux_iri_submit_template.sh
 ```
+
+**One API, two front ends.** `api.GlobusIRI` holds every operation and returns plain data;
+it never prints. `cli.py` only parses arguments, calls one `GlobusIRI` method and formats
+the result, so the CLI and Python callers (for example Harvester plugins) always behave
+the same. See [api.md](api.md).
 
 **globus-sdk v4 only.** v2 and v3 are not supported, and there is no compatibility layer.
 The code uses only v4 APIs:
@@ -411,6 +418,10 @@ sequenceDiagram
     C->>G: submit Transfer (HPC -> storage)
     G-->>C: task SUCCEEDED (poll)
   end
+  opt cleanup (job finished)
+    C->>G: submit Delete (stage-in files on HPC)
+    C->>I: rm work_dir/<run>, log_dir/<run>
+  end
 ```
 
 ### 5.1 Steps
@@ -428,10 +439,13 @@ sequenceDiagram
 | 7 | Monitor | `globusiri job status SITE JOBID [--wait]` | State mapping in §5.3 |
 | 8 | HTTPS download | `globusiri https stageout SITE REMOTE... --to LOCAL_DIR` | stdout/stderr paths come from the job's `admincomment` when present, otherwise from `log_dir/<run>/` |
 | 9 | E2E stage-out (optional) | `globusiri e2e stageout SITE --manifest out.txt` | Transfer task |
+| 10 | Cleanup (optional) | `globusiri e2e cleanup SITE --manifest in.txt`, `globusiri job cleanup SITE RUN_ID` | Globus delete task for the stage-in files on the HPC, then IRI `rm` of `work_dir/<run>` and `log_dir/<run>` |
 
 `globusiri run --job JOB_FILE` first validates the tokens the job requires (§4.5), then runs
-steps 2–9 in order. Steps 2 and 9 (the E2E transfers) run only when the job sets
-`staging.e2e.enabled: true`. Otherwise they are recorded as `skipped`. Each step is also its own command, so
+steps 2–10 in order. Steps 2 and 9 (the E2E transfers) run only when the job sets
+`staging.e2e.enabled: true`. Otherwise they are recorded as `skipped`. Step 10 runs only when
+the job file's `cleanup` section enables it, the job finished successfully, and steps 8 and 9
+did not fail. Otherwise it is recorded as `skipped` and the files are kept for debugging. Each step is also its own command, so
 Harvester or a user can drive the steps individually.
 
 ### 5.2 Job spec
@@ -488,7 +502,8 @@ Every run (`globusiri run`, or `job submit` given `--run-id`) keeps
     "submit":       {"status": "done", "job_id": "…"},
     "monitor":      {"status": "running", "state": "queued", "checked_at": "…"},
     "https_stageout": {"status": "pending"},
-    "e2e_stageout": {"status": "pending"}
+    "e2e_stageout": {"status": "pending"},
+    "cleanup":      {"status": "pending"}
   }
 }
 ```
@@ -558,6 +573,14 @@ e2e:
   `globusiri e2e login --force`, and never retried in a loop.
 - **Token reload.** When the access token file's mtime changes, the client is rebuilt. This
   is the same pattern as `refresh_transfer_client`.
+- **Cleanup.** `e2e cleanup` removes stage-in files from the HPC with a `DeleteData` task on
+  the site's HPC endpoint (not recursive, `ignore_missing`, batched like transfers, label
+  `globusiri-<run>-CLEANUP`). The files come from the stage-in manifest's `DST` column, from
+  Rucio paths under `e2e.base_path`, or from explicit paths. Each path must be below
+  `remote.work_dir`, `remote.log_dir` or `e2e.base_path` unless `--force` is given. Remote run
+  directories are removed separately with IRI `rm` (`job cleanup`). Deleting a file through
+  the E2E endpoint is more efficient than many IRI calls, and it reuses the token that wrote
+  the file.
 
 ## 8. HTTPS staging details
 
@@ -605,18 +628,22 @@ errors and HTTP 429/5xx. A 4xx is never retried. IRI async filesystem tasks keep
 
 ## 11. Harvester integration
 
-When the library is stable, the Harvester plugins can become thin wrappers:
+When the library is stable, the Harvester plugins can become thin wrappers over the Python
+API (`g = globusiri.GlobusIRI()`, see [api.md](api.md)):
 
-- `IriSubmitter.submit_workers` calls `globusiri.jobs.submit(site, workspec-derived inputs)`
-- `IriMonitor.check_workers` calls `globusiri.jobs.status` and `globusiri.staging.https.stageout`
-- `IriSweeper.kill_worker` calls `globusiri.jobs.cancel`
-- `GlobusBulkPreparator` and `GlobusBulkStager` call `globusiri.staging.e2e`
+- `IriSubmitter.submit_workers` calls `g.job_submit(job_file, site, set=..., inputs=...)`
+- `IriMonitor.check_workers` calls `g.job_status` and `g.https_stageout_job_logs`
+- `IriSweeper.kill_worker` calls `g.job_cancel`, and `IriSweeper.sweep_worker` calls `g.job_cleanup`
+- `GlobusBulkPreparator` and `GlobusBulkStager` call `g.e2e_stagein` / `g.e2e_stageout` with
+  `wait=False`, then `g.e2e_task` to check the tasks
 
 Harvester installs `globusiri` from PyPI into its venv and sets `GLOBUSIRI_WORK_DIR` in its
 environment. The queue config then needs only `"globusiri_site": "NERSC_Perlmutter"`, and all
 site details live in one place. This step is out of scope for the first implementation.
 
 ## 12. Implementation order
+
+All six steps are implemented in v0.1.0, with unit tests in `tests/` that run without network access. They have not yet been tested against the live NERSC and ALCF services.
 
 1. `pyproject.toml`, `paths.py`, `config.py`, `secure_io.py`, `globusiri init` and `globusiri paths`, plus unit tests for WORK_DIR resolution, config loading, and path mapping
 2. Token managers, the `iri`, `https`, and `e2e` login/refresh/panda/status CLI, and `globusiri validate`, replacing `cron.sh`
@@ -634,16 +661,38 @@ Resolved:
 - **Path maps are per collection.** NERSC needs none; ALCF needs one (§6).
 - **IRI PanDA secret moves to JSON**, and reading stays backward compatible (§4.4).
 - **Three independent tokens**, none of them interchangeable (§1).
+- **CLI name is `globusiri`.** The commands were first requested as `globus iri login`, but
+  `globus` is already the official Globus CLI (`globus-cli`) and would be shadowed. All
+  commands use `globusiri`, for example `globusiri iri login ...`.
+- **Cleanup.** NERSC and ALCF both expose IRI `DELETE filesystem/rm`. `globusiri job cleanup`
+  and `fs rm` use it for remote run directories. `globusiri e2e cleanup` removes stage-in files
+  with a Globus delete task. `run` does both at the end when the job file's `cleanup` section
+  enables them (§5.1, §7).
 
 Still open:
 
-1. **CLI name.** The requested commands use the form `globus iri login`, but `globus` is
-   already the official Globus CLI (`globus-cli`), and using that name would shadow it. This
-   draft uses `globusiri iri login ...`.
-2. **BNL storage endpoint.** Does the `SDCC` search result (index 0) resolve to BNL dCache
-   `12782fb1-...`? The first `e2e login` checks this automatically (§4.3).
-3. **Cleanup.** The IRI client has no `rm`. Remote run directories could be cleaned with a
-   Globus Transfer delete task, with a scheduled job on the HPC, or not at all.
-4. In `panda_queueconfig.json`, the `ALCF_Crux_IRI.monitor.remote_export_path` points at the
-   NERSC portal. It is unused because `download_logs_method` is `globus_https`, but it looks
-   like a copy-paste mistake.
+1. **BNL storage endpoint.** Does the `SDCC` search result (index 0) resolve to BNL dCache
+   `12782fb1-...`, the stage-in source and stage-out destination of both IRI queues in
+   `panda_queueconfig.json`? This cannot be checked offline. The first `globusiri e2e login`
+   prints the search candidates and fails if the result differs from the configured `id`
+   (§4.3). If it fails, change `e2e.endpoints.BNL_dCache.pick` and record the right index here.
+2. **IRI `rm` on directories.** The IRI API spec describes `filesystem/rm` only as "delete file
+   or directory". It does not say whether a non-empty directory is removed recursively.
+   `job cleanup` depends on this. Try it once on a finished run at NERSC and at ALCF. If a
+   facility refuses non-empty directories, remove the run directory with a recursive Globus
+   delete task instead.
+3. **Who owns the shared Rucio files.** `--rucio` stage-in writes to deterministic paths under
+   `e2e.base_path`, so several jobs on a site can share one file. Deleting it with
+   `e2e cleanup` or `cleanup.e2e_stagein` can break another job that is still reading it.
+   Options: keep `e2e.base_path` as a long-lived cache with a separate age-based cleanup, make
+   cleanup skip Rucio paths, or stage in per run below `remote.work_dir/<run>`. Until this is
+   decided, `cleanup.e2e_stagein` is off by default.
+4. **Real Rucio support.** `--rucio` only builds the deterministic RSE path (§7). It does not
+   look up replicas, expand datasets, or register outputs after stage-out. Is that enough for
+   the intended use, or should GlobusIRI use the Rucio client? If it should, that adds a fourth
+   credential (Rucio account or token) on the client host.
+5. **`remote_export_path` for Crux in Harvester.** In `harvester_HPC/panda_queueconfig.json`,
+   `ALCF_Crux_IRI.monitor.remote_export_path` is still `https://portal.nersc.gov/cfs/m2616/`
+   (checked 2026-11-05). It is unused because `download_logs_method` is `globus_https`, and
+   GlobusIRI does not read it. It looks like a copy-paste mistake. Remove it or point it at
+   ALCF in the Harvester config.
