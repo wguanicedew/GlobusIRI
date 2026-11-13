@@ -78,7 +78,7 @@ class E2ETokenManager(TokenManager):
         domains = [d for e in endpoints.values() for d in e["session_domains"]]
         unset = [label for label, e in endpoints.items() if e["data_access"] and not e["session_domains"]]
         if unset:
-            print(f"Note: no session_domains for {', '.join(unset)} in {self.config.path or "sites.yaml"}; Globus will not ask "
+            print(f"Note: no session_domains for {', '.join(unset)} in {self.config.path or 'sites.yaml'}; Globus will not ask "
                   "you to log in to those sites. If a collection then fails with LoginFailed or "
                   "AuthenticationRequired, set e2e.endpoints.<LABEL>.session_domains and log in again.")
         require_sessions(self.client_id, domains, what="e2e")
