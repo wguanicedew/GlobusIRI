@@ -19,6 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 panda = ["panda-client"]
+# For Python builds lacking the _sqlite3 extension (wheels exist for Linux only).
+sqlite = ["pysqlite3-binary; platform_system == 'Linux'"]
 test = ["pytest>=7"]
 
 [project.scripts]

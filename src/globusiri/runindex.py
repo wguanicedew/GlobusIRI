@@ -18,8 +18,18 @@ on a local filesystem with working POSIX locks and SQLite WAL support.
 import fcntl
 import json
 import logging
-import sqlite3
 from contextlib import closing, contextmanager
+
+try:
+    import sqlite3
+except ImportError:  # Python built without _sqlite3 (missing SQLite headers at build time)
+    try:
+        from pysqlite3 import dbapi2 as sqlite3
+    except ImportError:
+        raise ImportError(
+            "globusiri needs SQLite, but this Python was built without the _sqlite3 module. "
+            "Either install the SQLite dev package (libsqlite3-dev / sqlite-devel) and rebuild Python, "
+            "or run: pip install 'globusiri[sqlite]'  (installs pysqlite3-binary)") from None
 from pathlib import Path
 
 from .secure_io import write_json_private
