@@ -212,3 +212,19 @@ def test_e2e_login_requires_endpoint_domains_before_token(cfg, monkeypatch):
     monkeypatch.setattr(e2e_tokens.E2ETokenManager, "_do_refresh", lambda self: 0)
     manager("e2e", cfg).login(force=True, prompt_login=True)
     assert order == [("sessions", ["bnl.gov", "nersc.gov"]), ("token", False)]
+
+
+def test_validate_e2e_login_failed_suggests_session_domains():
+    from types import SimpleNamespace
+
+    from globusiri.config import Endpoint
+    from globusiri.validate import FAIL, _e2e_ls_failure
+
+    exc = SimpleNamespace(http_status=502, code="ExternalError.DirListingFailed.LoginFailed", message="Login failed")
+    c = _e2e_ls_failure("ALCF_CRUX", "BNL_dCache", "/pnfs/x/", exc, Endpoint("BNL_dCache", {"id": "x"}))
+    assert c.status == FAIL and "LoginFailed: Login failed" in c.detail
+    assert "e2e.endpoints.BNL_dCache.session_domains" in c.fix
+
+    exc.info = SimpleNamespace(authorization_parameters=SimpleNamespace(session_required_single_domain=["bnl.gov"]))
+    c = _e2e_ls_failure("ALCF_CRUX", "BNL_dCache", "/pnfs/x/", exc, Endpoint("BNL_dCache", {"id": "x"}))
+    assert "session_domains: [bnl.gov]" in c.fix

@@ -76,6 +76,11 @@ class E2ETokenManager(TokenManager):
         tc = transfer_login(self.client_id, prompt_login)
         endpoints = self.resolve_endpoints(tc)
         domains = [d for e in endpoints.values() for d in e["session_domains"]]
+        unset = [label for label, e in endpoints.items() if e["data_access"] and not e["session_domains"]]
+        if unset:
+            print(f"Note: no session_domains for {', '.join(unset)} in {self.config.path or "sites.yaml"}; Globus will not ask "
+                  "you to log in to those sites. If a collection then fails with LoginFailed or "
+                  "AuthenticationRequired, set e2e.endpoints.<LABEL>.session_domains and log in again.")
         require_sessions(self.client_id, domains, what="e2e")
         scope = build_transfer_scope([e["id"] for e in endpoints.values() if e["data_access"]])
         print(f"\nRequesting scope:\n{scope}\n")

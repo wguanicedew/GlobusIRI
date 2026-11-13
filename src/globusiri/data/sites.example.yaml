@@ -154,7 +154,7 @@ sites:
       collection_pick: 0
       collection_id: null
       panda_secret_key: ALCF_CRUX_HTTPS_TOKEN
-      session_domains: [alcf.anl.gov]
+      session_domains: [anl.gov]
       path_map:
         /lus/eagle/projects: /          # .../IRI_workdir/jobs -> /ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs
 

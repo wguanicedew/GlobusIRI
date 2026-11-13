@@ -241,13 +241,38 @@ def e2e_checks(config, sites):
                 checks.append(Check(site_name, "e2e", f"ls {label}", FAIL,
                                     f"{path} not found (check e2e paths and endpoints.{label}.path_map)"))
             else:
-                checks.append(Check(site_name, "e2e", f"ls {label}", FAIL,
-                                    f"ls {path}: HTTP {exc.http_status} {getattr(exc, 'code', '')}"))
+                checks.append(_e2e_ls_failure(site_name, label, path, exc, ep))
         except LoginRequired as exc:
             checks.append(Check(site_name, "e2e", f"ls {label}", FAIL, str(exc.args[0]), exc.fix or fix))
         except (GlobusIriError, globus_sdk.NetworkError) as exc:
             checks.append(Check(site_name, "e2e", f"ls {label}", FAIL, str(exc)))
     return checks
+
+
+def _required_domains(exc):
+    """Identity domains Globus says the session needs (authorization_parameters), if any."""
+    try:
+        params = exc.info.authorization_parameters
+        return list(params.session_required_single_domain or []) if params else []
+    except AttributeError:
+        return []
+
+
+def _e2e_ls_failure(site_name, label, path, exc, ep):
+    code = str(getattr(exc, "code", "") or "")
+    message = str(getattr(exc, "message", "") or "").strip().splitlines()
+    detail = f"ls {path}: HTTP {exc.http_status} {code}" + (f": {message[0][:200]}" if message else "")
+    domains = _required_domains(exc)
+    fix = None
+    if domains:
+        fix = (f"set e2e.endpoints.{label}.session_domains: [{', '.join(domains)}], "
+               "then globusiri e2e login --force --prompt-login")
+    elif "LoginFailed" in code or "Authentication" in code:
+        fix = (f"the collection rejected the token's identity; "
+               + (f"set e2e.endpoints.{label}.session_domains to the domain of your {label} identity, then "
+                  if not ep.session_domains else "check that you log in with the right identity, then ")
+               + "globusiri e2e login --force --prompt-login")
+    return Check(site_name, "e2e", f"ls {label}", FAIL, detail, fix)
 
 
 # ---------------------------------------------------------------------- PanDA
