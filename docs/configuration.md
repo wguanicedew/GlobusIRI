@@ -102,6 +102,7 @@ token_files:
 | `resource_id` | Compute resource | `iri_resource_id` |
 | `panda_secret_key` | Name of the PanDA secret | `--panda_secret_key` |
 | `validate` | Make a validation call after `refresh` | `--validate-iri` |
+| `session_domains` | Identity domains (e.g. `[nersc.gov]`) that `iri login` makes you log in with, one URL per domain, before it requests the token. Default: none | — |
 | `validate_url` | Optional. Overrides the validation URL (default: NERSC `account/projects`; ALCF filesystem `ls` on Home) | `--iri-validate-url` |
 | `validate_resource_id`, `validate_path` | Optional. ALCF only: resource and path for the default `ls` (default: Home, `/home/$USER/`) | `--alcf-validate-resource-id`, `--alcf-validate-path` |
 | `debug` | Print redacted request traces | `iri_debug` |

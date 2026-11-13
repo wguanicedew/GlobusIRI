@@ -189,6 +189,9 @@ def test_require_sessions_asks_one_login_per_domain(monkeypatch, capsys):
     assert len(prompts) == 2  # duplicates collapsed
     assert "session_required_single_domain=bnl.gov" in out and "session_required_single_domain=nersc.gov" in out
     assert out.index("bnl.gov") < out.index("nersc.gov")
+    import re
+    challenges = re.findall(r"code_challenge=([^&\s]+)", out)
+    assert len(challenges) == 2 and len(set(challenges)) == 2  # never reused
 
 
 def test_e2e_login_requires_endpoint_domains_before_token(cfg, monkeypatch):
@@ -228,3 +231,29 @@ def test_validate_e2e_login_failed_suggests_session_domains():
     exc.info = SimpleNamespace(authorization_parameters=SimpleNamespace(session_required_single_domain=["bnl.gov"]))
     c = _e2e_ls_failure("ALCF_CRUX", "BNL_dCache", "/pnfs/x/", exc, Endpoint("BNL_dCache", {"id": "x"}))
     assert "session_domains: [bnl.gov]" in c.fix
+
+
+def test_iri_and_https_login_require_site_domains(cfg, monkeypatch):
+    from globusiri.tokens import https as https_tokens
+    from globusiri.tokens import iri as iri_tokens
+
+    site = cfg.site("NERSC_Perlmutter")
+    site.iri_session_domains = ["nersc.gov"]
+    site.https_session_domains = ["nersc.gov"]
+    site.https_collection_id, site.https_server = "c" * 8, "https://x"
+    order = []
+
+    class Resp:
+        data = {"scope": FACILITIES["nersc"]["scope"], "access_token": "A", "refresh_token": "R"}
+        by_resource_server = {"c" * 8: {"refresh_token": "R"}}
+
+    for mod in (iri_tokens, https_tokens):
+        monkeypatch.setattr(mod, "require_sessions",
+                            lambda cid, d, **kw: order.append(("sessions", d, kw.get("prompt_login"))))
+        monkeypatch.setattr(mod, "interactive_login", lambda *a, **kw: order.append(("token", kw["prompt_login"])) or Resp())
+    monkeypatch.setattr(iri_tokens.IriTokenManager, "_do_refresh", lambda self: 0)
+    monkeypatch.setattr(https_tokens.HttpsTokenManager, "_do_refresh", lambda self: 0)
+    manager("iri", cfg, site).login(force=True, prompt_login=True)
+    manager("https", cfg, site).login(force=True, prompt_login=True)
+    # fresh login on the first domain step, never on the token step (it would drop the identities)
+    assert order == [("sessions", ["nersc.gov"], True), ("token", False)] * 2

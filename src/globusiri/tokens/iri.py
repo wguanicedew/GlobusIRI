@@ -9,7 +9,7 @@ import globus_sdk
 
 from ..errors import ConfigError, LoginRequired
 from ..secure_io import read_json
-from .base import TokenManager, expires_at_from, interactive_login
+from .base import TokenManager, expires_at_from, interactive_login, require_sessions
 
 NERSC_CLIENT_ID = "fae5c579-490a-4d76-b6eb-d78f65caeb63"
 ALCF_CLIENT_ID = "8b84fc2d-49e9-49ea-b54d-b3a29a70cf31"
@@ -71,11 +71,13 @@ class IriTokenManager(TokenManager):
             if not find_facility_token(stored, self.fac["scope"]):
                 raise LoginRequired(f"{import_file} has no token for {self.fac['label']}")
         else:
+            domains = self.site.iri_session_domains
+            require_sessions(self.fac["client_id"], domains, what=f"iri {self.site.name}", prompt_login=prompt_login)
             resp = interactive_login(
                 self.fac["client_id"],
                 IDENTITY_SCOPES + [self.fac["scope"]],
                 refresh_tokens=True,
-                prompt_login=prompt_login,
+                prompt_login=prompt_login and not domains,
                 message=f"Logging in for {self.fac['label']} ({self.site.name}).",
             )
             stored = dict(resp.data)

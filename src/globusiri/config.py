@@ -162,6 +162,7 @@ class Site:
         self.iri_panda_secret_key = iri.get("panda_secret_key")
         self.iri_validate = bool(iri.get("validate", True))
         self.iri_debug = bool(iri.get("debug", False))
+        self.iri_session_domains = str_list(iri.get("session_domains"))
 
         remote = raw.get("remote") or {}
         self.work_dir = remote.get("work_dir")

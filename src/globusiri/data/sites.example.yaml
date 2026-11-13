@@ -83,6 +83,7 @@ sites:
       base_url: https://api.iri.nersc.gov
       resource_id: 59e80c79-4dfd-4c53-9c07-7405685fcd37
       panda_secret_key: NERSC_IRI_ACCESS   # JSON payload (bare-token secrets still readable)
+      session_domains: [nersc.gov]      # `iri login` asks for a login per domain first
       validate: true
       debug: true
 
@@ -129,6 +130,7 @@ sites:
       base_url: https://api.alcf.anl.gov
       resource_id: 8b9b42f7-572a-4909-8472-a0453436304c
       panda_secret_key: ALCF_IRI_ACCESS
+      session_domains: [alcf.anl.gov]
       validate: true
       debug: true
 

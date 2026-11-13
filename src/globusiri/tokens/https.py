@@ -63,7 +63,8 @@ class HttpsTokenManager(TokenManager):
 
         collection_id = self.site.https_collection_id
         https_server = self.site.https_server
-        if not collection_id or not https_server:
+        pinned = bool(collection_id and https_server)  # no step-1 search login
+        if not pinned:
             tc = transfer_login(self.client_id, prompt_login)
             if not collection_id:
                 if not self.site.https_collection_query:
@@ -77,7 +78,8 @@ class HttpsTokenManager(TokenManager):
                 raise ConfigError(f"collection {collection_id} has no https_server")
 
         domains = self.site.https_session_domains
-        require_sessions(self.client_id, domains, what=f"https {self.name}")
+        # step 1 already forced a fresh login unless it was skipped
+        require_sessions(self.client_id, domains, what=f"https {self.name}", prompt_login=prompt_login and pinned)
         coll = GCSCollectionScopes(collection_id)
         resp = interactive_login(
             self.client_id,
