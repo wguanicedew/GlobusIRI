@@ -12,7 +12,7 @@ import yaml
 from .config import parse_duration
 from .errors import ConfigError
 
-TOP_LEVEL_KEYS = {"site", "name", "template_file", "template_vars", "resources", "inputs", "panda_auth_origin", "staging", "cleanup"}
+TOP_LEVEL_KEYS = {"site", "name", "template_file", "template_vars", "resources", "inputs", "panda_auth_origin", "staging", "cleanup", "log"}
 LAUNCHERS = (None, "single", "mpirun", "srun", "aprun", "jsrun")
 
 DEFAULT_JOB = {
@@ -38,6 +38,8 @@ DEFAULT_JOB = {
     },
     # after a successful run only; failed runs keep everything for debugging
     "cleanup": {"remote_run_dir": False, "e2e_stagein": False},
+    # local per-run log; null = <WORK_DIR>/runs/<run_id>/globusiri.log ({run_id} is replaced)
+    "log": None,
 }
 
 
@@ -133,6 +135,10 @@ class Job:
     @property
     def https_stageout(self):
         return (self.data.get("staging") or {}).get("https_stageout") or {}
+
+    @property
+    def log(self):
+        return self.data.get("log")
 
     @property
     def cleanup(self):

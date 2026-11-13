@@ -23,7 +23,8 @@ that directory. See [design.md §2.2](design.md#22-work_dir).
 | IRI tokens | `<WORK_DIR>/tokens/iri/<facility>.refresh.json`, `<facility>.access.yaml` |
 | HTTPS tokens | `<WORK_DIR>/tokens/https/<SITE>.refresh.yaml`, `<SITE>.access.yaml` |
 | E2E tokens | `<WORK_DIR>/tokens/e2e/refresh.yaml`, `access.yaml` |
-| Logs | `<WORK_DIR>/logs/globusiri.log` |
+| Logs | `<WORK_DIR>/logs/globusiri.log` (all runs) |
+| Run logs | `<WORK_DIR>/runs/<run_id>/globusiri.log`, or the job file's `log` (one run only) |
 | Runs | `<WORK_DIR>/runs/<run_id>/` (state, rendered script, stdout/stderr) |
 | Run index | `<WORK_DIR>/runs/index.db` (SQLite summaries for discovery and listings) |
 | Templates | `<WORK_DIR>/templates/<name>`, else packaged `globusiri/data/templates/<name>` |
@@ -217,6 +218,7 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 | `staging.e2e.stageout.manifest`, `.rucio`, `.files` | Transfer out of the HPC after the job finished successfully. Same forms as stage-in. Used only when `enabled` is true | stager |
 | `staging.https_stageout.stdout_stderr`, `.files` | Files to download after the job ends, into `<WORK_DIR>/runs/<run_id>/` | monitor `download_logs` |
 | `cleanup.remote_run_dir` | `true` makes `run` remove `<remote.work_dir>/<run_id>` (and `<remote.log_dir>/<run_id>`) with IRI `rm` at the end. Default `false` | sweeper |
+| `log` | Local log file for this run. It gets the same records as `logs/globusiri.log` (INFO and up), but only the ones for this run: IRI upload/submit, job state changes, step changes, HTTPS downloads, E2E tasks and their progress, errors and retries. A relative path is resolved against WORK_DIR, and `{run_id}` is replaced, e.g. `logs/runs/{run_id}.log`. Default `null` means `<WORK_DIR>/runs/<run_id>/globusiri.log` | worker log |
 | `cleanup.e2e_stagein` | `true` makes `run` delete the E2E stage-in files on the HPC with a Globus delete task at the end. Used only when `staging.e2e.enabled` is true. Default `false` | — |
 
 ### Tokens a job requires

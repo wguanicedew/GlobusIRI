@@ -31,6 +31,7 @@ from . import jobs, services
 from .errors import ConfigError, JobFailed, ValidationFailed
 from .jobfile import resolve_job
 from .runindex import RunIndex
+from .runlog import run_log_path, run_logging
 from .staging import e2e as e2e_staging
 from .staging import https as https_staging
 from .validate import FAIL, failed, validate
@@ -98,6 +99,10 @@ class RunState:
 
     def set(self, name, status, **extra):
         st = self.step(name)
+        if st.get("status") != status:
+            reason = extra.get("reason") or extra.get("error")
+            log.info("run %s: step %s %s -> %s%s", self.run_id, name, st.get("status"), status,
+                     f" ({reason})" if reason else "")
         st.update(extra)
         st["status"] = status
         st["updated_at"] = _now()
@@ -111,6 +116,7 @@ class RunState:
         self.data["finished_at"] = _now()
         if message:
             self.data["message"] = message
+        log.info("run %s: %s%s", self.run_id, status, f": {message}" if message else "")
         self.save()
 
 
@@ -176,9 +182,10 @@ def create(config, job, site, *, run_id=None, do_validate=True, stagein_manifest
         file_pairs(job.e2e.get(direction))  # fail early on a bad files: entry
     run_id = run_id or jobs.new_run_id()
     run_dir = config.paths.run_dir(run_id)
-    with run_lock(run_dir, blocking=True):
+    with run_lock(run_dir, blocking=True), run_logging(run_log_path(config, run_id, job), run_id):
         if (run_dir / "state.json").exists():
             raise ConfigError(f"run {run_id} already exists; use `globusiri monitor {run_id}` or `run --resume`")
+        log.info("run %s: created at %s (job %s)", run_id, site.name, job.source or job.name)
         state = RunState(run_dir)
         state.data.update({"run_id": run_id, "site": site.name, "status": ACTIVE, "current_step": STEPS[0],
                            "created_at": _now(), "remote_work_dir": site.remote_run_dir(run_id),
@@ -203,13 +210,19 @@ class _Ctx:
     only builds the client it needs."""
 
     def __init__(self, config, job, site, state, echo):
-        self.config, self.job, self.site, self.state, self.echo = config, job, site, state, echo
+        self.config, self.job, self.site, self.state = config, job, site, state
+        self._echo = echo
         self._iri = self._https = self._transfer = None
         self.report = None  # IRI job report from this pass
 
     @property
     def run_id(self):
         return self.state.run_id
+
+    def echo(self, msg):
+        """Progress message for the caller; also logged (and so in the run log)."""
+        log.info("run %s: %s", self.run_id, msg.strip())
+        self._echo(msg)
 
     @property
     def iri(self):
@@ -247,9 +260,14 @@ def _poll_tasks(ctx, step, key="task_ids"):
     if started and time.time() - started > ctx.config.e2e.timeout:
         raise JobFailed(f"{step}: tasks {', '.join(st[key])} not done after {ctx.config.e2e.timeout}s")
     st["checked_at"] = _now()
-    st["tasks"] = {tid: {"status": i["status"], "files": i.get("files"),
-                         "files_transferred": i.get("files_transferred"), "nice_status": i.get("nice_status")}
-                   for tid, i in infos.items()}
+    tasks = {tid: {"status": i["status"], "files": i.get("files"),
+                   "files_transferred": i.get("files_transferred"), "nice_status": i.get("nice_status")}
+             for tid, i in infos.items()}
+    if tasks != st.get("tasks"):
+        ctx.echo(f"  {step}: " + "; ".join(
+            f"{tid} {t['nice_status'] or t['status']} {t['files_transferred'] or 0}/{t['files'] or '?'} files"
+            for tid, t in tasks.items()))
+    st["tasks"] = tasks
     ctx.state.save()
     return False
 
@@ -280,7 +298,6 @@ def _e2e_transfer_step(ctx, step, direction):
         ctx.state.set(step, "running", task_ids=task_ids, files=len(p.items), started_at=_now())
         ctx.echo(f"  e2e {direction}: submitted {', '.join(task_ids)} ({len(p.items)} files)")
     if not _poll_tasks(ctx, step):
-        ctx.echo(f"  e2e {direction}: tasks still running")
         return False
     ctx.state.set(step, "done")
     ctx.echo(f"  e2e {direction}: done")
@@ -476,7 +493,10 @@ def advance(config, run_id, *, echo=None, raise_errors=False, wait_lock=False):
         state, job, site = load(config, run_id)
         if not state.status:  # a run made by `job submit`, which the engine does not drive
             raise ConfigError(f"run {run_id} was not created by `globusiri submit` or `run`")
-        return _advance_locked(config, state, job, site, echo=echo, raise_errors=raise_errors)
+        if state.status in RUN_TERMINAL:
+            return state
+        with run_logging(run_log_path(config, run_id, job), run_id):
+            return _advance_locked(config, state, job, site, echo=echo, raise_errors=raise_errors)
 
 
 def list_runs(config, *, status=None):
@@ -555,24 +575,29 @@ def cancel(config, run_id, *, echo=None):
         state, job, site = load(config, run_id)
         if state.status in RUN_TERMINAL:
             return state
-        ctx = _Ctx(config, job, site, state, echo)
-        for name in ("e2e_stagein", "e2e_stageout"):
-            st = state.step(name)
-            if st.get("status") == "running":
-                for tid in st.get("task_ids") or []:
-                    try:
-                        e2e_staging.cancel(ctx.transfer, tid)
-                        echo(f"  cancelled transfer {tid}")
-                    except Exception as exc:
-                        echo(f"  cancel transfer {tid}: {exc}")
-                state.set(name, "failed", error="cancelled")
-        if state.done("submit") and not state.done("monitor"):
-            job_id = state.step("submit")["job_id"]
-            jobs.cancel(ctx.iri, site, job_id)
-            state.set("monitor", "failed", state=jobs.CANCELLED, error="cancelled")
-            echo(f"  cancelled IRI job {job_id}")
-        state.finish(CANCELLED, "cancelled by user")
-        return state
+        with run_logging(run_log_path(config, run_id, job), run_id):
+            return _cancel_locked(_Ctx(config, job, site, state, echo))
+
+
+def _cancel_locked(ctx):
+    state, site, echo = ctx.state, ctx.site, ctx.echo
+    for name in ("e2e_stagein", "e2e_stageout"):
+        st = state.step(name)
+        if st.get("status") == "running":
+            for tid in st.get("task_ids") or []:
+                try:
+                    e2e_staging.cancel(ctx.transfer, tid)
+                    echo(f"  cancelled transfer {tid}")
+                except Exception as exc:
+                    echo(f"  cancel transfer {tid}: {exc}")
+            state.set(name, "failed", error="cancelled")
+    if state.done("submit") and not state.done("monitor"):
+        job_id = state.step("submit")["job_id"]
+        jobs.cancel(ctx.iri, site, job_id)
+        state.set("monitor", "failed", state=jobs.CANCELLED, error="cancelled")
+        echo(f"  cancelled IRI job {job_id}")
+    state.finish(CANCELLED, "cancelled by user")
+    return state
 
 
 def plugin_status(state_data):

@@ -30,6 +30,7 @@ from .errors import ConfigError, GlobusIriError, JobFailed, ValidationFailed
 from .jobfile import resolve_job
 from .paths import Paths, package_data_dir, work_dir_source
 from .runindex import RunIndex
+from .runlog import run_log_path, run_logging
 from .staging import e2e as e2e_staging
 from .staging import https as https_staging
 from .tokens import KINDS, manager
@@ -294,15 +295,16 @@ class GlobusIRI:
                 exc.checks = [c for c in checks if c.status != validation.OK]
                 raise exc
         run_dir = cfg.paths.run_dir(run_id)
-        state = workflow.RunState(run_dir)
-        state.data.update({"run_id": run_id, "site": site_obj.name, "created_at": workflow._now()})
-        sub, local_inputs = jobs.prepare(cfg, job_obj, site_obj, run_id, run_dir)
-        iri = services.iri_client(cfg, site_obj)
-        https = services.https_client(cfg, site_obj) if site_obj.upload_method == "globus_https" else None
-        jobs.upload_inputs(cfg, site_obj, sub, local_inputs, iri, https)
-        state.set("upload", "done", submission=sub.to_dict(), method=site_obj.upload_method)
-        job_id = jobs.launch(site_obj, sub, iri)
-        state.set("submit", "done", job_id=job_id)
+        with run_logging(run_log_path(cfg, run_id, job_obj), run_id):
+            state = workflow.RunState(run_dir)
+            state.data.update({"run_id": run_id, "site": site_obj.name, "created_at": workflow._now()})
+            sub, local_inputs = jobs.prepare(cfg, job_obj, site_obj, run_id, run_dir)
+            iri = services.iri_client(cfg, site_obj)
+            https = services.https_client(cfg, site_obj) if site_obj.upload_method == "globus_https" else None
+            jobs.upload_inputs(cfg, site_obj, sub, local_inputs, iri, https)
+            state.set("upload", "done", submission=sub.to_dict(), method=site_obj.upload_method)
+            job_id = jobs.launch(site_obj, sub, iri)
+            state.set("submit", "done", job_id=job_id)
         return {"run_id": run_id, "job_id": job_id, "remote_dir": sub.remote_dir, "stdout_path": sub.stdout_path,
                 "skipped_inputs": sub.skipped_inputs, "submission": sub.to_dict()}
 

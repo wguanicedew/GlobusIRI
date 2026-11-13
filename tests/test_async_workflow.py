@@ -236,3 +236,28 @@ def test_duplicate_run_does_not_overwrite_snapshot(env, work):
     with pytest.raises(ConfigError, match="already exists"):
         g.submit("crux_hello_job.yaml", run_id="same", validate=False)
     assert (work.run_dir("same") / "job.yaml").read_text() == before
+
+
+def test_run_log_gets_job_events(env, work):
+    g, iri, gl = env
+    g.submit("perlmutter_example_job.yaml", set=E2E_JOB, run_id="L1", validate=False)
+    gl.tasks["T1"] = "SUCCEEDED"
+    g.monitor()
+    iri.states = ["completed"]
+    g.monitor()
+    text = (work.runs_dir / "L1" / "globusiri.log").read_text()
+    assert "run L1: created" in text
+    assert "e2e stagein: submitted T1" in text
+    assert "globusiri.jobs: submitted IRI job JOB42" in text  # module logger, not only workflow
+    assert "job JOB42: finished" in text  # monitor state change
+    assert "step https_stageout pending -> done" in text
+
+
+def test_run_log_path_from_job_and_isolated_between_runs(env, work):
+    g, iri, gl = env
+    g.submit("perlmutter_example_job.yaml", set=["log=logs/runs/{run_id}.log"], run_id="L2", validate=False)
+    g.submit("perlmutter_example_job.yaml", run_id="L3", validate=False)
+    l2 = (work.root / "logs" / "runs" / "L2.log").read_text()
+    assert "run L2:" in l2 and "L3" not in l2
+    assert not (work.runs_dir / "L2" / "globusiri.log").exists()
+    assert "L2" not in (work.runs_dir / "L3" / "globusiri.log").read_text()

@@ -160,7 +160,7 @@ is also often read-only, for example in a root-owned venv or a shared software a
   runs/index.db                    # SQLite summary index (derived from state.json)
   runs/.index.lock                 # short lock for state/index publication and rebuilds
   runs/.daemon.lock                # at most one daemon for this WORK_DIR
-  runs/<run_id>/                    # job.yaml (resolved snapshot), state.json, executable_batch, logs, stdout/stderr
+  runs/<run_id>/                    # job.yaml (resolved snapshot), state.json, executable_batch, globusiri.log (this run only), stdout/stderr
   templates/                        # optional user templates; override packaged ones by name
   inputs/                           # optional files uploaded with each job (panda token, ...)
 ```

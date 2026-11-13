@@ -231,6 +231,7 @@ def upload_inputs(config, site, sub, local_inputs, iri, https=None):
             https.put(local, remote)
         else:
             iri.upload(local, remote, resource_id=site.work_dir_resource_id)
+        log.info("uploaded %s -> %s via %s", local, remote, site.upload_method)
         sub.uploaded.append(name)
     iri.chmod(posixpath.join(sub.remote_dir, EXECUTABLE), "0755", resource_id=site.work_dir_resource_id)
 
@@ -241,6 +242,8 @@ def launch(site, sub, iri):
     if not job_id:
         raise RemoteError(f"IRI submission returned no job id: {job}")
     sub.job_id = str(job_id)
+    log.info("submitted IRI job %s (%s) at %s: executable %s, stdout %s, stderr %s", sub.job_id,
+             sub.job_spec.get("name"), site.name, sub.job_spec.get("executable"), sub.stdout_path, sub.stderr_path)
     return sub.job_id
 
 
