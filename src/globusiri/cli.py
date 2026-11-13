@@ -299,6 +299,100 @@ def cmd_run(args, api):
     return EXIT_OK
 
 
+# ---------------------------------------------------------------------- non-blocking workflow
+def _run_row(r):
+    steps = r.get("steps") or {}
+    cur = r.get("current_step") or "-"
+    detail = r.get("step_state") or r.get("step_status") or ""
+    if cur in steps:
+        st = steps[cur]
+        detail = st.get("state") or st.get("status") or ""
+    err = (r.get("last_error") or {}).get("error") or r.get("message")
+    return [r.get("run_id"), r.get("site"), r.get("status"), cur, detail,
+            (steps.get("submit") or {}).get("job_id") or r.get("job_id"),
+            (r.get("updated_at") or "")[:19], err or ""]
+
+
+RUN_HEADERS = ["RUN_ID", "SITE", "STATUS", "STEP", "STEP_STATE", "JOB_ID", "UPDATED", "MESSAGE"]
+
+
+def print_runs(runs, as_json=False):
+    if as_json:
+        print_json(runs)
+    elif runs:
+        print(table([_run_row(r) for r in runs], RUN_HEADERS))
+    else:
+        print("no runs")
+
+
+def cmd_submit(args, api):
+    r = api.submit(args.job, args.site, set=args.set, inputs=args.input, run_id=args.run_id,
+                   stagein_manifest=args.stagein_manifest, stageout_manifest=args.stageout_manifest,
+                   validate=not args.no_validate, max_attempts=args.max_attempts,
+                   echo=None if args.json else print)
+    if args.json:
+        print_json(r)
+    else:
+        print_runs([r])
+        if r["status"] == "active":
+            print(f"next: globusiri monitor {r['run_id']}   (or keep `globusiri daemon` running)")
+    return EXIT_OK if r["status"] != "failed" else JobFailed.exit_code
+
+
+def cmd_monitor(args, api):
+    res = api.monitor(args.run_ids or None, echo=None if args.json else print)
+    if args.json:
+        print_json(res)
+        return EXIT_OK
+    runs = [r for r in res.values() if isinstance(r, dict)]
+    print_runs(runs)
+    for rid, r in res.items():
+        if not isinstance(r, dict):
+            print(f"{rid}: {r}", file=sys.stderr)
+    return EXIT_OK
+
+
+def cmd_daemon(args, api):
+    import signal
+
+    stopping = {"flag": False}
+
+    def _stop(signum, frame):
+        stopping["flag"] = True
+        log.info("daemon: signal %s, stopping after this pass", signum)
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    print(f"globusiri daemon: WORK_DIR {api.config.paths.root}, every {args.interval}s (SIGTERM/Ctrl-C to stop)")
+    api.daemon(interval=args.interval, echo=print, stop=lambda: stopping["flag"],
+               max_passes=1 if args.once else None)
+    return EXIT_OK
+
+
+def cmd_runs(args, api):
+    if args.run_id:
+        if args.reindex:
+            api.runs(summary=True, reindex=True)
+        r = api.run_state(args.run_id)
+        if args.json:
+            print_json(r)
+            return EXIT_OK
+        print_runs([r])
+        print()
+        print(table([[k, v.get("status"), v.get("state") or v.get("job_id") or ",".join(v.get("task_ids") or []),
+                      v.get("error") or v.get("reason") or ""] for k, v in r["steps"].items()],
+                    ["STEP", "STATUS", "DETAIL", "NOTE"]))
+        return EXIT_OK
+    print_runs(api.runs(status=args.status, summary=not args.json, reindex=args.reindex), args.json)
+    return EXIT_OK
+
+
+def cmd_cancel(args, api):
+    r = api.cancel(args.run_id, echo=print)
+    print_runs([r])
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------- parser
 def build_parser():
     p = argparse.ArgumentParser(prog="globusiri", description="Run HPC jobs through IRI and move files with Globus.")
@@ -447,6 +541,38 @@ def build_parser():
     s.add_argument("--no-validate", action="store_true")
     s.add_argument("--no-wait", action="store_true")
     s.add_argument("--interval", type=int, default=60, help="job poll interval in seconds")
+
+    s = sub.add_parser("submit", parents=[common],
+                       help="start a workflow run without waiting; `monitor` or `daemon` drives it on")
+    s.add_argument("site", nargs="?", metavar="SITE")
+    s.add_argument("--job", required=True, metavar="JOB_FILE")
+    s.add_argument("--run-id")
+    s.add_argument("--set", action="append", metavar="KEY=VALUE")
+    s.add_argument("--input", action="append", metavar="NAME=LOCAL", help="add/override an input file")
+    s.add_argument("--stagein-manifest")
+    s.add_argument("--stageout-manifest")
+    s.add_argument("--no-validate", action="store_true")
+    s.add_argument("--max-attempts", type=int, default=5,
+                   help="passes a step may fail with a transient error before the run fails (default 5)")
+    s.add_argument("--json", action="store_true")
+
+    s = sub.add_parser("monitor", parents=[common],
+                       help="one pass: check each active run's current step and trigger the next")
+    s.add_argument("run_ids", nargs="*", metavar="RUN_ID", help="default: every active run")
+    s.add_argument("--json", action="store_true")
+
+    s = sub.add_parser("daemon", parents=[common], help="run `monitor` in a loop")
+    s.add_argument("--interval", type=int, default=60, help="seconds between passes (default 60)")
+    s.add_argument("--once", action="store_true", help="one pass, then exit")
+
+    s = sub.add_parser("runs", parents=[common], help="list workflow runs, or show one")
+    s.add_argument("run_id", nargs="?", metavar="RUN_ID")
+    s.add_argument("--status", choices=["active", "finished", "failed", "cancelled"])
+    s.add_argument("--reindex", action="store_true", help="rebuild the central index from saved run states")
+    s.add_argument("--json", action="store_true")
+
+    s = sub.add_parser("cancel", parents=[common], help="cancel a run's IRI job and running transfers")
+    s.add_argument("run_id", metavar="RUN_ID")
     return p
 
 
@@ -465,6 +591,8 @@ def dispatch(args, paths):
         return cmd_fs(args, api)
     if group == "run":
         return cmd_run(args, api)
+    if group in ("submit", "monitor", "daemon", "runs", "cancel"):
+        return globals()[f"cmd_{group}"](args, api)
     if group == "https" and action in ("stagein", "stageout"):
         return cmd_https_stage(args, api)
     if group == "e2e" and action in ("stagein", "stageout", "cleanup", "task", "cancel"):

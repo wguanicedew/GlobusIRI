@@ -1,0 +1,31 @@
+# No PanDA credentials or E2E transfers. Edit project/queue for your allocation.
+# globusiri submit --job crux_hello_job.yaml
+site: ALCF_CRUX
+name: crux-hello
+template_file: shell_job_template.sh
+template_vars:
+  command: |
+    echo "Hello from Crux"
+    hostname
+    date -u
+    echo "Job completed" > result.txt
+resources:
+  project: ATLAS_workflow_ALCF
+  queue: debug
+  n_node: 1
+  n_core_per_node: 1
+  n_process_per_node: 1
+  duration: 5m
+  custom_attributes:
+    filesystems: home:eagle
+    place: scatter
+inputs: {}
+staging:
+  e2e:
+    enabled: false
+  https_stageout:
+    stdout_stderr: true
+    files: [result.txt]
+cleanup:
+  remote_run_dir: false
+  e2e_stagein: false

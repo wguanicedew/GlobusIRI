@@ -29,6 +29,7 @@ from .config import load_config, parse_duration
 from .errors import ConfigError, GlobusIriError, JobFailed, ValidationFailed
 from .jobfile import resolve_job
 from .paths import Paths, package_data_dir, work_dir_source
+from .runindex import RunIndex
 from .staging import e2e as e2e_staging
 from .staging import https as https_staging
 from .tokens import KINDS, manager
@@ -141,6 +142,7 @@ class GlobusIRI:
             ("tokens", self.paths.tokens_dir, "WORK_DIR"),
             ("logs", self.paths.log_file, "WORK_DIR"),
             ("runs", self.paths.runs_dir, "WORK_DIR"),
+            ("run index", self.paths.runs_dir / "index.db", "WORK_DIR"),
             ("jobs", self.paths.jobs_dir, "WORK_DIR"),
             ("templates", f"{self.paths.templates_dir}, then {package_data_dir() / 'templates'}", "WORK_DIR, package"),
         ]
@@ -480,5 +482,71 @@ class GlobusIRI:
                                echo=echo or (lambda *a: None))
 
     def run_state(self, run_id):
-        """The saved state.json of a run, as a dict."""
-        return workflow.RunState.load(self.config.paths.run_dir(run_id)).data
+        """The saved state.json of a run, as a dict (plus "plugin_status")."""
+        data = workflow.RunState.load(self.config.paths.run_dir(run_id)).data
+        return {**data, "plugin_status": workflow.plugin_status(data)}
+
+    # ------------------------------------------------------------------ non-blocking workflow
+    # submit() starts a run; every monitor() call checks each run's current step and triggers
+    # the next ones. Call monitor() from your own loop (plugin mode, e.g. a Harvester monitor
+    # cycle) or let daemon() call it (daemon mode). Neither blocks on a transfer or a job.
+    def submit(self, job, site=None, *, set=None, inputs=None, overrides=None, run_id=None, stagein_manifest=None,
+               stageout_manifest=None, validate=True, advance=True, max_attempts=workflow.DEFAULT_MAX_ATTEMPTS,
+               echo=None):
+        """Create a workflow run and (by default) make its first pass, which goes as far as it
+        can without waiting: validate, start the e2e stage-in or, without one, upload and
+        submit the IRI job. Returns the run's state dict (see run_state).
+
+        set: ["key=value", ...]; inputs: ["NAME=LOCAL", ...]; overrides: a nested dict merged
+        last (for keys that contain dots, e.g. {"inputs": {"pandaJobData.out": path}}).
+        max_attempts: how many passes a step may fail with a transient error before the run fails.
+        """
+        job_obj, site_obj = self.resolve_job(job, site, set=set, inputs=inputs)
+        if overrides:
+            from .jobfile import Job, deep_merge
+
+            job_obj = Job(deep_merge(job_obj.data, overrides), source=job_obj.source)
+        state = workflow.create(self.config, job_obj, site_obj, run_id=run_id, do_validate=validate,
+                                stagein_manifest=stagein_manifest, stageout_manifest=stageout_manifest,
+                                max_attempts=max_attempts)
+        if advance:
+            try:
+                workflow.advance(self.config, state.run_id, echo=echo)
+            except workflow.RunBusy:
+                pass  # a monitor already picked up the newly published run
+        return self.run_state(state.run_id)
+
+    def advance(self, run_id, *, echo=None):
+        """One pass over one run: check its current step, trigger the next. Returns the state dict.
+        Raises workflow.RunBusy if another process is advancing the same run right now."""
+        workflow.advance(self.config, run_id, echo=echo)
+        return self.run_state(run_id)
+
+    def monitor(self, run_ids=None, *, echo=None):
+        """One pass over the given runs (default: every active run). Never raises for a single
+        run. Returns {run_id: state dict, or an error string if the run could not be advanced}."""
+        out = {}
+        for rid, r in workflow.monitor(self.config, run_ids, echo=echo).items():
+            out[rid] = {**r.data, "plugin_status": workflow.plugin_status(r.data)} if isinstance(r, workflow.RunState) else r
+        return out
+
+    def daemon(self, *, interval=60, echo=None, stop=None, max_passes=None):
+        """Run monitor() every `interval` seconds until stop() returns True. One daemon per WORK_DIR."""
+        workflow.daemon(self.config, interval=interval, echo=echo, stop=stop, max_passes=max_passes)
+
+    def cancel(self, run_id, *, echo=None):
+        """Cancel a run: its IRI job and any running Globus transfer. Returns the state dict."""
+        workflow.cancel(self.config, run_id, echo=echo)
+        return self.run_state(run_id)
+
+    def runs(self, *, status=None, summary=False, reindex=False):
+        """State dicts of the runs under WORK_DIR/runs, newest first. status: "active",
+        "finished", "failed", "cancelled", or a list of them. summary=True returns
+        index rows only; reindex=True rebuilds the index from state.json first."""
+        index = RunIndex(self.config.paths.runs_dir)
+        if reindex:
+            index.rebuild()
+        if summary:
+            return index.query(status=status)
+        return [{**r.data, "plugin_status": workflow.plugin_status(r.data)}
+                for r in workflow.list_runs(self.config, status=status)]

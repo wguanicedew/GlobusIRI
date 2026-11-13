@@ -1,0 +1,160 @@
+# Job examples
+
+All examples below use one shared local WORK_DIR. `init` copies the YAML files into
+`$GLOBUSIRI_WORK_DIR/jobs/` and keeps any existing files. Run it again after upgrading to
+install newly added examples. Edit `config/sites.yaml` for your site paths, endpoints, and
+allocation before submitting. The allocation and storage paths shipped here are examples.
+
+```bash
+export GLOBUSIRI_WORK_DIR="$HOME/globusiri-work"
+globusiri init
+globusiri paths
+```
+
+For each site you use, log in once and refresh the access tokens. Shell examples need IRI
+and HTTPS tokens, since they download logs/results; the transfer example also needs E2E.
+
+```bash
+globusiri iri login NERSC_Perlmutter
+globusiri https login NERSC_Perlmutter
+globusiri iri refresh NERSC_Perlmutter
+globusiri https refresh NERSC_Perlmutter
+# For Crux, repeat these commands with ALCF_CRUX.
+# For E2E transfers:
+globusiri e2e login
+globusiri e2e refresh
+```
+
+Use the [refresh cron examples](cli.md#cron-replaces-harvester_hpccronsh) to keep access
+tokens valid for long-running jobs. These shell examples do not need PanDA credentials.
+
+## Hello world on Perlmutter or Crux
+
+The packaged files are
+[`perlmutter_hello_job.yaml`](../src/globusiri/data/jobs/perlmutter_hello_job.yaml) and
+[`crux_hello_job.yaml`](../src/globusiri/data/jobs/crux_hello_job.yaml). Each prints a host name
+and date, writes `result.txt`, and downloads the logs and result after completion. They use
+the packaged `shell_job_template.sh`, whose command comes from `template_vars.command`.
+
+```bash
+# Inspect the generated script and resource request without submitting.
+globusiri job submit --job perlmutter_hello_job.yaml --dry-run
+globusiri validate --job perlmutter_hello_job.yaml
+
+globusiri submit --job perlmutter_hello_job.yaml --run-id hello-pm-001
+globusiri submit --job crux_hello_job.yaml --run-id hello-crux-001
+globusiri monitor
+```
+
+`monitor` makes one pass, then exits. Keep calling it or run `globusiri daemon --interval 60`
+until the runs finish. Results are saved as `runs/hello-pm-001/result.txt` and
+`runs/hello-crux-001/result.txt` under WORK_DIR. Use a new run ID for each submission, or
+omit `--run-id` to generate a unique ID. Job files can be reused without editing.
+
+## Upload a local input and retrieve an output
+
+[`perlmutter_wordcount_job.yaml`](../src/globusiri/data/jobs/perlmutter_wordcount_job.yaml)
+uploads `inputs/words.txt` as `words.txt`, counts words on the HPC, and downloads
+`wordcount.txt`. Relative local input paths are relative to WORK_DIR.
+
+```bash
+printf 'one two three\n' > "$GLOBUSIRI_WORK_DIR/inputs/words.txt"
+globusiri submit --job perlmutter_wordcount_job.yaml --run-id count-001
+globusiri daemon --interval 60
+# After count-001 finishes, Ctrl-C stops the daemon.
+cat "$GLOBUSIRI_WORK_DIR/runs/count-001/wordcount.txt"   # 3
+```
+
+Override the input for another submission with `--input`:
+
+```bash
+globusiri submit --job perlmutter_wordcount_job.yaml \
+  --input words.txt=/absolute/path/to/another.txt
+```
+
+For these Perlmutter examples, uploads use IRI according to the example site config;
+downloads use Globus HTTPS. Crux uploads use Globus HTTPS. Missing input files are skipped
+by the uploader; the word-count script explicitly fails if `words.txt` is missing.
+
+## E2E stage-in, compute, and stage-out
+
+[`perlmutter_transfer_job.yaml`](../src/globusiri/data/jobs/perlmutter_transfer_job.yaml)
+demonstrates the full sequence:
+
+1. Globus Transfer copies an existing storage-side `input.txt` onto Perlmutter.
+2. IRI submits a shell job that writes `wordcount.txt`.
+3. Globus HTTPS downloads logs and the word count locally.
+4. Globus Transfer copies the word count to the storage destination.
+
+Before submitting, edit the copied YAML so that storage paths refer to files and writable
+directories you can access. The HPC paths must match `remote.work_dir` from your site config
+and the chosen run ID. Both source/destination endpoint labels come from the site's E2E
+configuration. HPC paths are mount paths; GlobusIRI applies the endpoint's path map.
+
+```bash
+globusiri validate --job perlmutter_transfer_job.yaml
+globusiri submit --job perlmutter_transfer_job.yaml --run-id transfer-demo-001
+globusiri daemon --interval 60
+```
+
+This example contains literal paths with `transfer-demo-001`. For a second copy, change
+the run ID and the transfer paths together, including the storage output destination, so
+jobs have separate output files. Transfer paths do not expand `{runID}` placeholders.
+Automatic cleanup is disabled; inputs and remote directories remain available for inspection.
+
+For larger file lists, replace inline `files` with manifests:
+
+```yaml
+staging:
+  e2e:
+    enabled: true
+    stagein:
+      manifest: inputs/stagein.txt
+    stageout:
+      manifest: inputs/stageout.txt
+```
+
+Each manifest line is `SOURCE_PATH DESTINATION_PATH`. Manifest paths are local and relative
+to WORK_DIR; paths inside the manifests describe files on the Globus endpoints. Keep separate
+manifests per job when paths differ.
+
+## Many submissions, one monitor
+
+Every terminal, cron job, and service must use the same `GLOBUSIRI_WORK_DIR`. Omit run IDs
+to generate a fresh ID each time. Independent submitters may run at the same time:
+
+```bash
+for i in 1 2 3 4 5; do
+  globusiri submit --job perlmutter_hello_job.yaml --set "name=hello-$i" &
+done
+wait
+
+globusiri runs --status active
+globusiri monitor                 # one pass over every active run at every site
+globusiri daemon --interval 60    # continuous passes; new submissions join automatically
+```
+
+The daemon can already be running when jobs are submitted. It continues when no runs are
+active. Instead of a daemon, a host program or cron can invoke `monitor` periodically.
+Additional monitors are safe: a monitor skips any run another process is advancing. Only one
+daemon may run per WORK_DIR. `globusiri monitor RUN_ID` restricts a pass to one run.
+
+Bookkeeping lives in `runs/index.db`, with full progress and job snapshots in each run's
+directory. Normal monitoring queries active index rows without scanning all directories.
+The index is created from saved states when missing; `globusiri runs --reindex` rebuilds it
+after importing runs or recovering an interrupted update. Use local storage with POSIX
+locks and SQLite WAL support. See the [concurrency details](cli.md#non-blocking-workflow-submit-monitor-daemon).
+
+## PanDA pilot jobs
+
+The original [`perlmutter_example_job.yaml`](../src/globusiri/data/jobs/perlmutter_example_job.yaml)
+and [`crux_example_job.yaml`](../src/globusiri/data/jobs/crux_example_job.yaml) use the
+facility-specific PanDA pilot templates. Set their credential input paths, queue/template
+variables, and site environment before using them. They can share the same monitor as the
+shell examples:
+
+```bash
+globusiri submit --job perlmutter_example_job.yaml
+globusiri submit --job crux_example_job.yaml
+globusiri monitor
+```

@@ -32,7 +32,8 @@ DEFAULT_JOB = {
     "inputs": {},
     "panda_auth_origin": "",
     "staging": {
-        "e2e": {"enabled": False, "stagein": {"manifest": None, "rucio": []}, "stageout": {"manifest": None, "rucio": []}},
+        "e2e": {"enabled": False, "stagein": {"manifest": None, "rucio": [], "files": []},
+                "stageout": {"manifest": None, "rucio": [], "files": []}},
         "https_stageout": {"stdout_stderr": True, "files": []},
     },
     # after a successful run only; failed runs keep everything for debugging
@@ -155,7 +156,7 @@ class Job:
         if not self.e2e_enabled:
             for direction in ("stagein", "stageout"):
                 spec = self.e2e.get(direction) or {}
-                if spec.get("manifest") or spec.get("rucio"):
+                if spec.get("manifest") or spec.get("rucio") or spec.get("files"):
                     raise ConfigError(
                         f"staging.e2e.{direction} lists files but staging.e2e.enabled is false; "
                         "set enabled: true or remove the files"

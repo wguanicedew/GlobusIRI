@@ -2,6 +2,7 @@
 # `globusiri init` copies it to <WORK_DIR>/jobs/. Use it with:
 #   globusiri job submit --job crux_example_job.yaml
 #   globusiri run        --job crux_example_job.yaml
+#   globusiri submit     --job crux_example_job.yaml   (then `globusiri monitor` or `globusiri daemon`)
 # Merge order (later wins): sites.<site>.job_defaults < this file < CLI --set key=value
 # Note: sites.ALCF_CRUX.unsupported_resource_fields still drops process_count,
 # processes_per_node and cpu_cores_per_process from the submitted job_spec.
@@ -41,9 +42,11 @@ staging:
     stagein:
       manifest: null
       rucio: []
+      files: []                 # inline "SRC DST" or {src, dst}
     stageout:
       manifest: null
       rucio: []
+      files: []
   https_stageout:
     stdout_stderr: true
     files: []

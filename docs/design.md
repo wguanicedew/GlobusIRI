@@ -157,6 +157,9 @@ is also often read-only, for example in a root-owned venv or a shared software a
     e2e/refresh.yaml
     e2e/access.yaml                 #   client_id, access_token, expires_at, <label>_https
   logs/globusiri.log                # rotating CLI/library log (tokens redacted)
+  runs/index.db                    # SQLite summary index (derived from state.json)
+  runs/.index.lock                 # short lock for state/index publication and rebuilds
+  runs/.daemon.lock                # at most one daemon for this WORK_DIR
   runs/<run_id>/                    # job.yaml (resolved snapshot), state.json, executable_batch, logs, stdout/stderr
   templates/                        # optional user templates; override packaged ones by name
   inputs/                           # optional files uploaded with each job (panda token, ...)
@@ -448,6 +451,28 @@ the job file's `cleanup` section enables it, the job finished successfully, and 
 did not fail. Otherwise it is recorded as `skipped` and the files are kept for debugging. Each step is also its own command, so
 Harvester or a user can drive the steps individually.
 
+### 5.1a Execution modes
+
+The workflow engine (`workflow.advance`) never blocks. One pass over a run checks the current
+step (a Globus task status or the IRI job state). If that step is done, the pass starts the
+next one, and it stops at the first step that is still in progress. The same engine runs in
+three modes:
+
+| Mode | Entry point | Who calls `advance` |
+|---|---|---|
+| Plugin | `g.submit()` once, then `g.monitor()` / `globusiri monitor` | the host program (e.g. Harvester's monitor cycle), each time it wants progress |
+| Daemon | `globusiri submit`, then `globusiri daemon` (or `g.daemon()`) | the daemon, every `--interval` seconds |
+| Blocking | `globusiri run` / `g.run()` | `run`, in a loop until the run ends |
+
+A run's `status` is `active`, `finished`, `failed`, or `cancelled`. `monitor()` picks up only
+`active` runs. A step error that cannot be fixed by retrying (failed transfer, failed
+validation, config error) fails the run. Any other error is recorded as `last_error`, and the
+step is retried on the next pass, up to `max_attempts` passes in a row. A per-run `flock` on
+`runs/<run_id>/.lock` lets several callers share a WORK_DIR (a daemon, a plugin, the CLI)
+without running the same step twice. One more caveat: a `submit` step that fails with a
+transient error after IRI already accepted the job (a lost response) is retried, and that
+retry can submit the job twice.
+
 ### 5.2 Job spec
 
 The job spec is built from the resolved job (site `job_defaults`, then the job file, then
@@ -488,13 +513,16 @@ any terminal state.
 
 ### 5.4 Run state
 
-Every run (`globusiri run`, or `job submit` given `--run-id`) keeps
+Every run (`globusiri run` or `submit`, or `job submit` given `--run-id`) keeps
 `<WORK_DIR>/runs/<run_id>/state.json`, next to `job.yaml`, the resolved job snapshot that
-`--resume` reuses:
+every later pass and `--resume` reuse:
 
 ```json
 {
   "run_id": "20261105-a1b2c3", "site": "NERSC_Perlmutter",
+  "status": "active", "current_step": "monitor",
+  "options": {"validate": true, "max_attempts": 5},
+  "last_error": {"step": "monitor", "error": "RemoteError: 502", "attempt": 1, "at": "…"},
   "remote_work_dir": "/global/cfs/cdirs/m2616/harvester_workdir/20261105-a1b2c3",
   "steps": {
     "e2e_stagein":  {"status": "done", "task_id": "…"},
@@ -508,8 +536,29 @@ Every run (`globusiri run`, or `job submit` given `--run-id`) keeps
 }
 ```
 
-Re-running `globusiri run --resume <run_id>` skips steps already marked `done`. A run can
+Re-running `globusiri run --resume <run_id>` skips steps already marked `done` and retries
+failed ones. Runs made by `job submit` have no `status` and are not driven by `monitor`. A run can
 survive a client restart because the job itself lives on the HPC.
+
+### 5.5 Central index and concurrent processes
+
+`runs/index.db` holds a summary row per run: run ID, site, status, current step, job ID,
+timestamps, and last error. `RunState.save()` writes the full state with atomic file
+replacement and upserts the summary in a SQLite transaction, under `runs/.index.lock`.
+The lock is held only for local bookkeeping; it never covers remote API requests.
+Initialization and rebuilds use the same lock, so a rebuild cannot overwrite newer state.
+Competing creations of the same run ID are serialized by the per-run lock.
+
+`monitor()` queries active rows, oldest first, and reads only those states. Normal queries
+never scan run directories. A missing index triggers a one-time import of
+`runs/*/state.json`; `globusiri runs --reindex` rebuilds it explicitly. The table printed by
+`runs` uses only index rows; JSON and full API results load the selected states.
+
+SQLite uses WAL and WORK_DIR must be on a local filesystem with reliable POSIX locks.
+Concurrent submitters, monitor callers, and reindexing can share it. A process killed
+between replacing JSON and committing the database can leave a stale index; rebuild from
+the authoritative JSON to recover. This does not provide exactly-once remote submission:
+a lost IRI response after acceptance can still cause a duplicate submission on retry.
 
 ---
 
@@ -628,8 +677,14 @@ errors and HTTP 429/5xx. A 4xx is never retried. IRI async filesystem tasks keep
 
 ## 11. Harvester integration
 
-When the library is stable, the Harvester plugins can become thin wrappers over the Python
-API (`g = globusiri.GlobusIRI()`, see [api.md](api.md)):
+GlobusIRI does not ship Harvester plugins. Instead, the API works in plugin mode (§5.1a):
+a plugin calls `g.submit(...)` once per worker, using `run_id` as the worker's `batchID`, then
+calls `g.monitor([run_ids])` in each `check_workers` cycle and maps `plugin_status` to
+`WorkSpec.ST_*` (the strings are the same). It calls `g.cancel(run_id)` in `kill_worker`.
+Each `monitor` call moves the workflow on by itself, so no cron job and no daemon is needed.
+
+Alternatively, the plugins can drive single steps (`g.run_state()` then only reads progress
+when a `globusiri daemon` advances the runs):
 
 - `IriSubmitter.submit_workers` calls `g.job_submit(job_file, site, set=..., inputs=...)`
 - `IriMonitor.check_workers` calls `g.job_status` and `g.https_stageout_job_logs`

@@ -2,6 +2,7 @@
 # `globusiri init` copies it to <WORK_DIR>/jobs/. Use it with:
 #   globusiri job submit --job perlmutter_example_job.yaml
 #   globusiri run        --job perlmutter_example_job.yaml
+#   globusiri submit     --job perlmutter_example_job.yaml   (then `globusiri monitor` or `globusiri daemon`)
 # Merge order (later wins): sites.<site>.job_defaults < this file < CLI --set key=value
 # Relative local paths resolve against WORK_DIR; ${VAR} is expanded.
 
@@ -41,12 +42,16 @@ panda_auth_origin: atlas.pilot
 staging:
   e2e:
     enabled: false              # true -> this job moves data with Globus E2E Transfer
-    stagein:                    # used only when enabled
+    stagein:                    # used only when enabled; manifest, rucio and files add up
       manifest: null            # file of "SRC DST" lines
       rucio: []                 # e.g. [mc23_13p6TeV:EVNT.12345._000001.pool.root.1]
-    stageout:
+      files: []                 # inline, "SRC DST" or {src: ..., dst: ...}; HPC side is the mount path
+      #  - /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/mc23/EVNT.root /global/cfs/cdirs/m2616/harvester_workdir/rucio/EVNT.root
+    stageout:                   # only after the job finished successfully
       manifest: null
       rucio: []
+      files: []
+      #  - {src: /global/cfs/cdirs/m2616/harvester_workdir/out/AOD.root, dst: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/out/AOD.root}
   https_stageout:               # downloaded after the job ends, into <WORK_DIR>/runs/<run_id>/
     stdout_stderr: true
     files: []                   # extra remote files, relative to <remote.work_dir>/<run_id>/

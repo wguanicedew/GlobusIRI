@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from globusiri import jobs
@@ -85,6 +87,23 @@ def test_template_rendering_keeps_bash_vars(cfg, tmp_path, work):
     assert 'if [ -n "pandaTokenFilename" ]' in text  # uploaded input -> its remote name
     assert 'if [ -n "" ] && [ -f "" ]; then\n    export X509' in text  # missing input -> ""
     assert set(local) == {"pandaTokenFilename"}
+
+
+@pytest.mark.parametrize("job_name,output,expected", [
+    ("perlmutter_hello_job.yaml", "result.txt", "Job completed"),
+    ("crux_hello_job.yaml", "result.txt", "Job completed"),
+    ("perlmutter_wordcount_job.yaml", "wordcount.txt", "3"),
+    ("perlmutter_transfer_job.yaml", "wordcount.txt", "3"),
+])
+def test_shell_examples_produce_documented_outputs(cfg, tmp_path, job_name, output, expected):
+    job, site = resolve_job(cfg, job_name)
+    ph = jobs.placeholders(job, site, "example", {})
+    ph["work_dir"] = str(tmp_path)
+    script = jobs.render_template(cfg.paths.find_template(job.template_file), ph, tmp_path / "job.sh")
+    (tmp_path / "words.txt").write_text("one two three\n")
+    (tmp_path / "input.txt").write_text("one two three\n")
+    subprocess.run(["/bin/bash", str(script)], check=True, capture_output=True)
+    assert (tmp_path / output).read_text().strip() == expected
 
 
 @pytest.mark.parametrize("state,exit_code,expected", [

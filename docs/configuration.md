@@ -25,9 +25,16 @@ that directory. See [design.md §2.2](design.md#22-work_dir).
 | E2E tokens | `<WORK_DIR>/tokens/e2e/refresh.yaml`, `access.yaml` |
 | Logs | `<WORK_DIR>/logs/globusiri.log` |
 | Runs | `<WORK_DIR>/runs/<run_id>/` (state, rendered script, stdout/stderr) |
+| Run index | `<WORK_DIR>/runs/index.db` (SQLite summaries for discovery and listings) |
 | Templates | `<WORK_DIR>/templates/<name>`, else packaged `globusiri/data/templates/<name>` |
 
 To see the resolved locations, run `globusiri paths`.
+
+All submitters and monitors for the same set of jobs must share WORK_DIR. Use a local
+filesystem with POSIX file locks and SQLite WAL support. Active runs are found through
+the index, without a directory scan; missing indexes are imported from saved run state.
+`globusiri runs --reindex` rebuilds the index on demand. See
+[CLI bookkeeping and concurrency](cli.md#non-blocking-workflow-submit-monitor-daemon).
 
 Format rules:
 
@@ -169,8 +176,11 @@ globusiri job submit --job perlmutter_example_job.yaml
 globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 ```
 
-- **Examples.** The package ships two examples, `globusiri/data/jobs/perlmutter_example_job.yaml`
-  and `crux_example_job.yaml`. `globusiri init` copies them to `<WORK_DIR>/jobs/`.
+- **Examples.** `globusiri init` copies all packaged job examples into `<WORK_DIR>/jobs/`.
+  The `*_example_job.yaml` files show PanDA settings; `*_hello_job.yaml` run simple shell
+  commands, `perlmutter_wordcount_job.yaml` uploads a local file, and
+  `perlmutter_transfer_job.yaml` enables E2E stage-in and stage-out. See
+  [examples.md](examples.md) for commands and required edits.
 - **Lookup.** `--job NAME` is used as a path if it exists. Otherwise it is looked up as
   `<WORK_DIR>/jobs/NAME`.
 - **Merge order.** Later entries win:
@@ -203,8 +213,8 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 | `inputs.<remote_name>` | Local file uploaded as `<remote.work_dir>/<run_id>/<remote_name>`. Relative paths are resolved against WORK_DIR, and `${X509_USER_PROXY}` is allowed. Missing files are skipped | `pandaTokenFilename`, `pandaTokenKeyPath`, `x509UserProxy` |
 | `panda_auth_origin` | `{tokenOrigin}` placeholder | `pandaAuthOrigin` |
 | `staging.e2e.enabled` | Whether this job moves data with Globus E2E Transfer. If `false` (the default), the E2E steps are skipped and the E2E token is **not required or validated** for this job | preparator / stager configured or not |
-| `staging.e2e.stagein.manifest`, `.rucio` | Transfer into the HPC before submission. Used only when `enabled` is true | preparator |
-| `staging.e2e.stageout.manifest`, `.rucio` | Transfer out of the HPC after the job ends. Used only when `enabled` is true | stager |
+| `staging.e2e.stagein.manifest`, `.rucio`, `.files` | Transfer into the HPC before submission (e.g. input ROOT files). `files` is an inline list of `"SRC DST"` strings or `{src, dst}` maps; HPC-side paths are mount paths. The three sources are combined. Used only when `enabled` is true | preparator |
+| `staging.e2e.stageout.manifest`, `.rucio`, `.files` | Transfer out of the HPC after the job finished successfully. Same forms as stage-in. Used only when `enabled` is true | stager |
 | `staging.https_stageout.stdout_stderr`, `.files` | Files to download after the job ends, into `<WORK_DIR>/runs/<run_id>/` | monitor `download_logs` |
 | `cleanup.remote_run_dir` | `true` makes `run` remove `<remote.work_dir>/<run_id>` (and `<remote.log_dir>/<run_id>`) with IRI `rm` at the end. Default `false` | sweeper |
 | `cleanup.e2e_stagein` | `true` makes `run` delete the E2E stage-in files on the HPC with a Globus delete task at the end. Used only when `staging.e2e.enabled` is true. Default `false` | — |

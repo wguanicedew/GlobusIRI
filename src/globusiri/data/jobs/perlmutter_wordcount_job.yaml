@@ -1,0 +1,29 @@
+# Create <WORK_DIR>/inputs/words.txt, then:
+# globusiri submit --job perlmutter_wordcount_job.yaml
+# Or override the local file: --input words.txt=/absolute/path/to/words.txt
+site: NERSC_Perlmutter
+name: perlmutter-wordcount
+template_file: shell_job_template.sh
+template_vars:
+  command: |
+    test -f words.txt
+    wc -w < words.txt > wordcount.txt
+resources:
+  project: m2616
+  queue: debug
+  constraint: cpu
+  n_node: 1
+  n_core_per_node: 1
+  n_process_per_node: 1
+  duration: 5m
+inputs:
+  words.txt: inputs/words.txt
+staging:
+  e2e:
+    enabled: false
+  https_stageout:
+    stdout_stderr: true
+    files: [wordcount.txt]
+cleanup:
+  remote_run_dir: false
+  e2e_stagein: false

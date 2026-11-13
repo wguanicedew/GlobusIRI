@@ -250,6 +250,9 @@ globusiri run [SITE] --job JOB_FILE
 globusiri run --resume RUN_ID [--no-wait] [--no-validate]
 ```
 
+`run` is the blocking mode of the workflow: it starts a run and does not return until the
+run ends. To start a run and let something else drive it, use [`submit`](#non-blocking-workflow-submit-monitor-daemon).
+
 `run` performs these steps in order: E2E stage-in, then HTTPS upload, then IRI submit, then
 IRI monitor, then HTTPS download of stdout/stderr, then E2E stage-out, then cleanup.
 Cleanup is off by default. The job file's `cleanup` section turns it on (see
@@ -257,7 +260,8 @@ Cleanup is off by default. The job file's `cleanup` section turns it on (see
 successfully and the downloads and stage-out did not fail. Otherwise every file is kept for
 debugging, and you can remove them later with `job cleanup` and `e2e cleanup`. Progress is saved in
 `<WORK_DIR>/runs/<RUN_ID>/state.json`. If `--run-id` is not given, a run ID is generated.
-With `--resume`, steps already marked `done` are skipped.
+With `--resume`, steps already marked `done` are skipped, and failed steps are retried
+(a failed E2E transfer is resubmitted). `--no-wait` makes one pass and returns, like `submit`.
 
 Before any step runs, `run` validates the tokens the job requires, exactly as
 `validate --job` does. If any check fails, the run stops before anything is transferred or
@@ -276,3 +280,91 @@ globusiri run --job perlmutter_example_job.yaml \
   --stageout-manifest outputs.txt \
   --run-id test1                 # state in <WORK_DIR>/runs/test1/
 ```
+
+## Non-blocking workflow: submit, monitor, daemon
+
+```bash
+globusiri submit [SITE] --job JOB_FILE [--set key=value]... [--input NAME=LOCAL]...
+                 [--stagein-manifest in.txt] [--stageout-manifest out.txt]
+                 [--run-id ID] [--no-validate] [--max-attempts 5] [--json]
+globusiri monitor [RUN_ID...] [--json]
+globusiri daemon [--interval 60] [--once]
+globusiri runs [RUN_ID] [--status active|finished|failed|cancelled] [--reindex] [--json]
+globusiri cancel RUN_ID
+```
+
+These run the same steps as `run`, without ever waiting on a transfer or a job:
+
+- **`submit`** creates the run (`<WORK_DIR>/runs/<RUN_ID>/state.json` and `job.yaml`) and makes
+  the first pass. That pass validates the tokens and starts the E2E stage-in. If the job has
+  no stage-in, the pass also uploads the scripts over HTTPS and submits the IRI job. It returns
+  right away and prints the run ID.
+- **`monitor`** makes one pass over every active run, or only over the given run IDs. For each
+  run it checks the current step: the Globus task status, or the IRI job state. When that step
+  is done, the pass starts the next one, and it keeps going until a step is still in progress.
+  Run it each time you want the runs to move on, for example from a host program's own cycle
+  (plugin mode, see [api.md](api.md#example-plugin-mode-no-waiting-no-cron)).
+- **`daemon`** runs `monitor` every `--interval` seconds until SIGTERM or Ctrl-C. Only one
+  daemon can run per WORK_DIR. `--once` makes one pass and exits.
+- **`runs`** lists runs with their status, current step, IRI job ID and last error.
+  The table uses the central index only. `--json` loads full state for the selected runs.
+  `runs RUN_ID` shows every step of one run; `runs --reindex` rebuilds the index.
+- **`cancel`** cancels the IRI job and any Globus transfer that is still running, and marks the
+  run `cancelled`.
+
+| Step | Pass starts it | Pass checks | Done when |
+|---|---|---|---|
+| validate | always (unless `--no-validate`) | — | the tokens the job needs pass |
+| e2e_stagein | `staging.e2e.enabled` and stage-in files | Globus task status | every task `SUCCEEDED` |
+| upload | after stage-in | — | scripts and inputs uploaded, `executable_batch` is 0755 |
+| submit | after upload | — | IRI returned a job ID |
+| monitor | after submit | IRI job state | `finished`, `failed` or `cancelled` |
+| https_stageout | job ended | — | stdout/stderr (and `files`) downloaded |
+| e2e_stageout | job `finished` and stage-out files | Globus task status | every task `SUCCEEDED` |
+| cleanup | job `finished`, and the job file enables it | Globus delete task | stage-in files deleted, run dirs removed |
+
+**Errors.** A failed Globus transfer, a failed token validation or a config error fails the run
+at once (`status: failed`, with `message`). Any other error, such as a network error, an HTTP 5xx,
+or a token file briefly missing during a refresh, is recorded as `last_error`. The same step is
+retried on the next pass. After `--max-attempts` failed passes in a row, the run fails. A failed log
+download is recorded on the step and does not fail the run. To retry a failed run, use
+`globusiri run --resume RUN_ID [--no-wait]`.
+
+**Many jobs, one monitor.** All commands must use the same `GLOBUSIRI_WORK_DIR` and site
+configuration. Any number of `submit` commands can create runs there. `monitor` with no run
+IDs queries every active run, across sites, and makes one pass before exiting. Runs submitted
+after that query are picked up on the next pass. Use `daemon` for continuous monitoring, or
+invoke `monitor` from a host program or cron. `job submit` is a lower-level command whose
+runs are not advanced by this monitor; use `submit` for the full workflow.
+
+**Bookkeeping.** `<WORK_DIR>/runs/index.db` is a central SQLite summary index. Each run also
+has `state.json` (full progress), `job.yaml` (resolved job), and `.lock` under
+`runs/<run_id>/`. Normal monitoring queries `status = active` in the index and reads only
+those runs, without scanning WORK_DIR or completed runs. When the index is missing, it is
+initialized by a one-time scan of `runs/*/state.json`. Use `runs --reindex` after importing
+run directories or to repair an out-of-date summary after an interrupted save.
+
+**Concurrency.** A per-run `flock` prevents two processes from advancing the same run at
+once; another monitor reports it as `busy` and continues with other runs. Creation also
+locks the run so competing `submit --run-id` calls cannot overwrite it. A brief
+`runs/.index.lock` serializes state publication, index initialization, and reindexing;
+SQLite transactions commit index changes together, and atomic file replacement keeps
+`state.json` readable. Remote calls happen outside the index lock. Multiple monitors and
+submitters can therefore share this bookkeeping; only a second `daemon` is refused.
+
+Keep WORK_DIR on a local filesystem with reliable POSIX locks and SQLite WAL support;
+network filesystems such as NFS are unsuitable for this WAL-based index. A process killed
+between replacing JSON and committing SQLite may leave the index stale: the JSON remains
+the recovery source for `runs --reindex`. Locks prevent concurrent duplicate launches, but
+an IRI submission accepted remotely with a lost response can still be submitted again by
+a retry (see [design.md](design.md#51a-execution-modes)).
+
+```bash
+globusiri submit --job perlmutter_example_job.yaml --run-id test2
+globusiri runs                    # STATUS active, STEP e2e_stagein / monitor ...
+globusiri monitor                 # check and trigger, as often as you like
+nohup globusiri daemon --interval 60 >> "$GLOBUSIRI_WORK_DIR/logs/daemon.out" 2>&1 &
+```
+
+See [examples.md](examples.md) for complete job files and several submissions sharing one
+monitor.

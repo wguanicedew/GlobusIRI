@@ -1,0 +1,38 @@
+# Replace storage paths with files/directories your Globus identity can access.
+# This example uses fixed HPC paths for transfer-demo-001; submit with:
+# globusiri submit --job perlmutter_transfer_job.yaml --run-id transfer-demo-001
+# For another concurrent copy, change the run ID AND every transfer path below.
+# Transfer paths are literal paths, not template placeholders.
+site: NERSC_Perlmutter
+name: perlmutter-transfer
+template_file: shell_job_template.sh
+template_vars:
+  command: |
+    test -f input.txt
+    wc -w < input.txt > wordcount.txt
+resources:
+  project: m2616
+  queue: debug
+  constraint: cpu
+  n_node: 1
+  n_core_per_node: 1
+  n_process_per_node: 1
+  duration: 5m
+inputs: {}
+staging:
+  e2e:
+    enabled: true
+    stagein:
+      files:
+        - src: /pnfs/usatlas.bnl.gov/atlasdatadisk/globusiri-examples/input.txt
+          dst: /global/cfs/cdirs/m2616/harvester_workdir/transfer-demo-001/input.txt
+    stageout:
+      files:
+        - src: /global/cfs/cdirs/m2616/harvester_workdir/transfer-demo-001/wordcount.txt
+          dst: /pnfs/usatlas.bnl.gov/atlasdatadisk/globusiri-examples/transfer-demo-001/wordcount.txt
+  https_stageout:
+    stdout_stderr: true
+    files: [wordcount.txt]
+cleanup:
+  remote_run_dir: false
+  e2e_stagein: false
