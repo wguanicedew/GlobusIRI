@@ -1,9 +1,11 @@
 __pycache__/
 *.pyc
 *.egg-info/
+*.DS_Store
 /build/
 /dist/
 /.venv/
+/docs/presentations/
 .pytest_cache/
 # a WORK_DIR accidentally created at the repo root: never commit tokens or run state
 /tokens/
