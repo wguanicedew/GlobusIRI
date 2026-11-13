@@ -67,7 +67,7 @@ e2e:
       query: alcf#dtn_eagle
       pick: 0
       data_access: true
-      session_domains: [anl.gov]
+      session_domains: [alcf.anl.gov]
       path_map:
         /lus/eagle/projects: /    # /lus/eagle/projects/ATLAS_workflow_ALCF/x -> /ATLAS_workflow_ALCF/x
 
@@ -156,7 +156,7 @@ sites:
       collection_pick: 0
       collection_id: null
       panda_secret_key: ALCF_CRUX_HTTPS_TOKEN
-      session_domains: [anl.gov]
+      session_domains: [alcf.anl.gov]
       path_map:
         /lus/eagle/projects: /          # .../IRI_workdir/jobs -> /ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs
 
