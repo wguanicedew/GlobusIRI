@@ -59,6 +59,27 @@ def interactive_login(client_id, scopes, *, refresh_tokens=False, prompt_login=F
         raise LoginRequired(f"code exchange failed: HTTP {exc.http_status}: {exc.message}") from exc
 
 
+def require_sessions(client_id, domains, *, what=None):
+    """Make the user log in with an identity from each domain, one by one, in the same
+    browser session. Globus adds each identity to the session, so a later token request
+    is issued with all of them present. A scope alone only asks for consent; it never
+    makes Globus ask for a login with a particular identity."""
+    domains = list(dict.fromkeys(domains or []))
+    if not domains:
+        return
+    client = globus_sdk.NativeAppAuthClient(client_id)
+    client.oauth2_start_flow(requested_scopes=["openid"])
+    for i, domain in enumerate(domains, 1):
+        url = client.oauth2_get_authorize_url(
+            session_required_single_domain=domain,
+            session_message=f"globusiri{' ' + what if what else ''}: log in with your {domain} identity",
+        )
+        print(f"\nSession login {i}/{len(domains)}: log in with your {domain} identity"
+              f"{' (' + what + ')' if what else ''}.")
+        print(f"Open this URL in the same browser for every step:\n{url}\n")
+        input("Press Enter after logging in (the authorization code is not needed): ")
+
+
 class TokenManager:
     """Base class. Subclasses implement login() and _do_refresh()."""
 

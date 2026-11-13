@@ -13,7 +13,7 @@ from globus_sdk.scopes import GCSCollectionScopes, TransferScopes
 
 from ..errors import ConfigError, LoginRequired
 from ..secure_io import read_yaml
-from .base import TokenManager, expires_at_from, interactive_login
+from .base import TokenManager, expires_at_from, interactive_login, require_sessions
 from .https import search_collection, transfer_login
 
 
@@ -57,7 +57,8 @@ class E2ETokenManager(TokenManager):
                     )
                 eid = found
             https_server = tc.get_endpoint(eid).get("https_server")
-            resolved[label] = {"id": eid, "https_server": https_server, "data_access": ep.data_access}
+            resolved[label] = {"id": eid, "https_server": https_server, "data_access": ep.data_access,
+                               "session_domains": ep.session_domains}
         if not resolved:
             raise ConfigError("e2e.endpoints is empty")
         return resolved
@@ -74,10 +75,14 @@ class E2ETokenManager(TokenManager):
 
         tc = transfer_login(self.client_id, prompt_login)
         endpoints = self.resolve_endpoints(tc)
+        domains = [d for e in endpoints.values() for d in e["session_domains"]]
+        require_sessions(self.client_id, domains, what="e2e")
         scope = build_transfer_scope([e["id"] for e in endpoints.values() if e["data_access"]])
         print(f"\nRequesting scope:\n{scope}\n")
-        resp = interactive_login(self.client_id, [scope], refresh_tokens=True, prompt_login=prompt_login,
-                                 message="Step 2: Globus Transfer login with data_access consents.")
+        # prompt_login here would drop the session identities gathered above
+        resp = interactive_login(self.client_id, [scope], refresh_tokens=True,
+                                 prompt_login=prompt_login and not domains,
+                                 message="Final step: Globus Transfer login with data_access consents.")
         tok = resp.by_resource_server.get(TransferScopes.resource_server) or {}
         if not tok.get("refresh_token"):
             raise LoginRequired("login returned no Transfer refresh token")

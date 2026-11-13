@@ -44,23 +44,30 @@ e2e:
   # label -> endpoint. Give `id`, `query` (+ `pick`), or both; with both, login fails if
   # the search result differs from `id`. data_access: request data_access/https consent.
   # path_map: HPC mount prefix -> Globus path prefix for this endpoint (omit if identical).
+  # session_domains: identity domains `e2e login` makes you log in with, one by one, before
+  #   it issues the token (a scope alone only asks for consent, never for a site login).
+  #   Use the domain of the identity the collection requires, as shown in Globus under
+  #   Settings -> Identities (e.g. you@bnl.gov -> bnl.gov). Empty = no extra logins.
   endpoints:
     BNL_dCache:
       id: 12782fb1-a599-4f18-b0fb-2e849681e214
       query: SDCC                 # as in generate_transfer_token_to_panda.py ENDPOINT_QUERIES
       pick: 0
       data_access: true
+      session_domains: [bnl.gov]  # verify: the domain of your BNL/SDCC Globus identity
     NERSC:
       id: 9d6d994a-6d04-11e5-ba46-22000b92c6ec
       query: NERSC DTN
       pick: 0
       data_access: true
+      session_domains: [nersc.gov]
       path_map: {}                # Globus path == Perlmutter mount path
     Crux:
       id: 05d2c76a-e867-4f67-aa57-76edeb0beda0
       query: alcf#dtn_eagle
       pick: 0
       data_access: true
+      session_domains: [anl.gov]
       path_map:
         /lus/eagle/projects: /    # /lus/eagle/projects/ATLAS_workflow_ALCF/x -> /ATLAS_workflow_ALCF/x
 
@@ -102,6 +109,7 @@ sites:
       collection_pick: 0
       collection_id: null               # optional pin; skips the search
       panda_secret_key: NERSC_HTTPS_TOKEN
+      session_domains: [nersc.gov]       # `https login` asks for a login per domain first
       path_map: {}                      # Globus path == Perlmutter mount path
 
     e2e:
@@ -146,6 +154,7 @@ sites:
       collection_pick: 0
       collection_id: null
       panda_secret_key: ALCF_CRUX_HTTPS_TOKEN
+      session_domains: [alcf.anl.gov]
       path_map:
         /lus/eagle/projects: /          # .../IRI_workdir/jobs -> /ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs
 

@@ -85,6 +85,7 @@ token_files:
 | `endpoints.<LABEL>.id` | Globus endpoint or collection UUID |
 | `endpoints.<LABEL>.query`, `.pick` | `endpoint_search` query and result index (same as `ENDPOINT_QUERIES`). If `id` is also set, login fails when the two disagree |
 | `endpoints.<LABEL>.data_access` | `true` means `e2e login` requests `data_access` and `https` consent for it |
+| `endpoints.<LABEL>.session_domains` | Identity domains (e.g. `[bnl.gov]`) that `e2e login` makes you log in with, one URL per domain in the same browser, before it requests the token. Requesting scopes only asks for consent, so without this Globus issues the token for whatever identity your browser session already has. Use the domain of the identity the collection requires (Globus web app, Settings, Identities). Default: none |
 | `endpoints.<LABEL>.path_map` | Map from HPC mount paths to this endpoint's Globus paths. Omit it when the paths are identical (see [`path_map`](#path_map)) |
 
 ## `sites.<NAME>`
@@ -154,6 +155,7 @@ files (see [Job files](#job-files)).
 |---|---|---|
 | `collection_query`, `collection_pick` | `endpoint_search` query and index used by `https login` to discover the HTTPS collection | `SITE_QUERIES` |
 | `collection_id` | Optional pin that skips the search. The collection is usually not the same as the site's E2E endpoint (it differs for ALCF). The discovered `collection_id` and `https_server` are stored in the token files, and the runtime reads them from there | — |
+| `session_domains` | Like `e2e.endpoints.<LABEL>.session_domains`, for `https login` of this site. Default: none |
 | `https_server` | Optional. Pins the HTTPS server address. Together with `collection_id`, it lets `https login` skip the first (search) login | — |
 | `path_map` | Map from HPC mount paths to this collection's Globus paths | `globus_upload_dir` / `globus_download_dir` |
 | `panda_secret_key` | For example, `NERSC_HTTPS_TOKEN` | `--panda_secret_key` |

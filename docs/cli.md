@@ -53,6 +53,14 @@ globusiri iri status --all
 globusiri validate              # live check of every token for every site
 ```
 
+Requesting a scope only asks Globus for consent. It does not make you log in with a site's
+identity. To be asked to log in to each site, list the identity domains in
+`e2e.endpoints.<LABEL>.session_domains` (for `e2e login`) or `sites.<SITE>.https.session_domains`
+(for `https login`). Login then prints one URL per domain. Open each URL in the same browser,
+log in with that site's identity, and press Enter. After the last domain, the usual token
+request runs with all those identities in the session. Use `--prompt-login --force` to start
+from a fresh Globus session.
+
 ## Validate tokens
 
 ```

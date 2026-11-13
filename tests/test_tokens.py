@@ -177,3 +177,38 @@ def test_upload_only_when_changed(cfg, monkeypatch):
     assert m.refresh(min_lifetime=3600, upload_to_panda=True).uploaded
     assert not m.refresh(min_lifetime=3600, upload_to_panda=True).uploaded
     assert uploads == ["NERSC_HTTPS_TOKEN"]
+
+
+def test_require_sessions_asks_one_login_per_domain(monkeypatch, capsys):
+    from globusiri.tokens.base import require_sessions
+
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda msg="": prompts.append(msg) or "")
+    require_sessions("165ae151-86aa-430a-8251-ce565e51998f", ["bnl.gov", "nersc.gov", "bnl.gov"], what="e2e")
+    out = capsys.readouterr().out
+    assert len(prompts) == 2  # duplicates collapsed
+    assert "session_required_single_domain=bnl.gov" in out and "session_required_single_domain=nersc.gov" in out
+    assert out.index("bnl.gov") < out.index("nersc.gov")
+
+
+def test_e2e_login_requires_endpoint_domains_before_token(cfg, monkeypatch):
+    from globusiri.config import Endpoint
+    from globusiri.tokens import e2e as e2e_tokens
+
+    cfg.e2e.endpoints = {"BNL": Endpoint("BNL", {"id": "a" * 8, "data_access": True, "session_domains": "bnl.gov"}),
+                         "NERSC": Endpoint("NERSC", {"id": "b" * 8, "session_domains": ["nersc.gov"]})}
+    order = []
+
+    class Resp:
+        by_resource_server = {"transfer.api.globus.org": {"refresh_token": "RT"}}
+
+    monkeypatch.setattr(e2e_tokens, "transfer_login", lambda *a: object())
+    monkeypatch.setattr(e2e_tokens.E2ETokenManager, "resolve_endpoints", lambda self, tc: {
+        label: {"id": ep.id, "https_server": None, "data_access": ep.data_access,
+                "session_domains": ep.session_domains} for label, ep in cfg.e2e.endpoints.items()})
+    monkeypatch.setattr(e2e_tokens, "require_sessions", lambda cid, domains, **kw: order.append(("sessions", domains)))
+    monkeypatch.setattr(e2e_tokens, "interactive_login",
+                        lambda *a, **kw: order.append(("token", kw["prompt_login"])) or Resp())
+    monkeypatch.setattr(e2e_tokens.E2ETokenManager, "_do_refresh", lambda self: 0)
+    manager("e2e", cfg).login(force=True, prompt_login=True)
+    assert order == [("sessions", ["bnl.gov", "nersc.gov"]), ("token", False)]

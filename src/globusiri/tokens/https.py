@@ -13,7 +13,7 @@ from globus_sdk.scopes import GCSCollectionScopes, TransferScopes
 
 from ..errors import ConfigError, LoginRequired
 from ..secure_io import read_yaml
-from .base import TokenManager, expires_at_from, interactive_login
+from .base import TokenManager, expires_at_from, interactive_login, require_sessions
 
 
 def search_collection(tc, query, pick=0):
@@ -76,12 +76,14 @@ class HttpsTokenManager(TokenManager):
             if not https_server:
                 raise ConfigError(f"collection {collection_id} has no https_server")
 
+        domains = self.site.https_session_domains
+        require_sessions(self.client_id, domains, what=f"https {self.name}")
         coll = GCSCollectionScopes(collection_id)
         resp = interactive_login(
             self.client_id,
             [coll.https, coll.data_access],
             refresh_tokens=True,
-            prompt_login=prompt_login,
+            prompt_login=prompt_login and not domains,
             message=(
                 f"Step 2: log in with the identity that has access to {self.name}.\n"
                 "If your Globus session is logged in as a different site's identity, log out first "

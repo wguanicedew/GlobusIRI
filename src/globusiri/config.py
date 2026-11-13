@@ -99,6 +99,15 @@ class PathMap:
         return f"PathMap({dict(self._to_globus)})"
 
 
+def str_list(value):
+    """None | "a" | "a, b" | ["a", "b"] -> ["a", "b"]."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        value = value.split(",")
+    return [str(v).strip() for v in value if v and str(v).strip()]
+
+
 class Endpoint:
     def __init__(self, label, raw):
         self.label = label
@@ -108,6 +117,8 @@ class Endpoint:
         self.pick = int(raw.get("pick", 0) or 0)
         self.data_access = bool(raw.get("data_access", False))
         self.path_map = PathMap(raw.get("path_map"))
+        # identity domains whose login `e2e login` requires before issuing the token
+        self.session_domains = str_list(raw.get("session_domains"))
         if not self.id and not self.query:
             raise ConfigError(f"e2e.endpoints.{label}: give 'id' and/or 'query'")
 
@@ -177,6 +188,7 @@ class Site:
         self.https_server = https.get("https_server")
         self.https_panda_secret_key = https.get("panda_secret_key")
         self.https_path_map = PathMap(https.get("path_map"))
+        self.https_session_domains = str_list(https.get("session_domains"))
 
         e2e = raw.get("e2e") or {}
         self.e2e = e2e
