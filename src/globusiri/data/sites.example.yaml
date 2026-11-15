@@ -55,6 +55,8 @@ e2e:
       pick: 0
       data_access: true
       session_domains: [bnl.gov]  # verify: the domain of your BNL/SDCC Globus identity
+      path_map:                   # dCache namespace -> path on the SDCC Globus collection
+        /pnfs: /dcint-door003     # /pnfs/usatlas.bnl.gov/x -> /dcint-door003/usatlas.bnl.gov/x
     NERSC:
       id: 9d6d994a-6d04-11e5-ba46-22000b92c6ec
       query: NERSC DTN
@@ -118,10 +120,10 @@ sites:
       base_path: /global/cfs/cdirs/m2616/harvester_workdir/rucio
       stagein:
         src_endpoint: BNL_dCache
-        src_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/
+        src_path: /dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio/
       stageout:
         dst_endpoint: BNL_dCache
-        dst_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/
+        dst_path: /dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio/
 
   ALCF_CRUX:
     facility: alcf
@@ -165,7 +167,7 @@ sites:
       base_path: /lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/rucio  # -> /ATLAS_workflow_ALCF/... via endpoints.Crux.path_map
       stagein:
         src_endpoint: BNL_dCache
-        src_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/
+        src_path: /dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio/
       stageout:
         dst_endpoint: BNL_dCache
-        dst_path: /pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/
+        dst_path: /dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio/

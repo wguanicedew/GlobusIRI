@@ -135,17 +135,17 @@ def test_e2e_plan_maps_only_hpc_side(cfg):
     p = plan(cfg, site, "stagein", rucio=["mc23:f1"])
     (src, dst), = p.items
     assert p.src.label == "BNL_dCache" and p.dst.label == "Crux"
-    assert src.startswith("/pnfs/usatlas.bnl.gov/atlasdatadisk/rucio/mc23/")
+    assert src.startswith("/dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio/mc23/")
     assert dst.startswith("/ATLAS_workflow_ALCF/usatlas/IRI_workdir/rucio/mc23/")  # mapped
     out = plan(cfg, site, "stageout", pairs=[("/lus/eagle/projects/ATLAS_workflow_ALCF/o.root", "/pnfs/x/o.root")])
-    assert out.items == [("/ATLAS_workflow_ALCF/o.root", "/pnfs/x/o.root")]
+    assert out.items == [("/ATLAS_workflow_ALCF/o.root", "/dcint-door003/x/o.root")]  # BNL path_map
 
 
 def test_e2e_plan_manifest(cfg, tmp_path):
     m = tmp_path / "m.txt"
     m.write_text("# comment\n/pnfs/a /global/cfs/cdirs/m2616/a\n\n")
     p = plan(cfg, cfg.site("NERSC_Perlmutter"), "stagein", manifest=m)
-    assert p.items == [("/pnfs/a", "/global/cfs/cdirs/m2616/a")]
+    assert p.items == [("/dcint-door003/a", "/global/cfs/cdirs/m2616/a")]  # /pnfs mapped by BNL path_map
     m.write_text("only-one-column\n")
     with pytest.raises(ConfigError):
         plan(cfg, cfg.site("NERSC_Perlmutter"), "stagein", manifest=m)

@@ -65,7 +65,9 @@ def test_monitor_passes_drive_the_whole_workflow(env):
     assert r["status"] == "active" and r["current_step"] == "e2e_stagein"
     assert steps(r)["e2e_stagein"] == "running" and not iri.calls
     assert gl.submitted[0][0] == "stagein"
-    assert gl.submitted[0][2] == [tuple(IN_FILE.split())]  # NERSC has no path_map
+    # BNL maps /pnfs -> /dcint-door003; NERSC has no path_map
+    src, dst = IN_FILE.split()
+    assert gl.submitted[0][2] == [(src.replace("/pnfs/", "/dcint-door003/", 1), dst)]
 
     # transfer still active: monitor does nothing more
     r = g.monitor()["A1"]
