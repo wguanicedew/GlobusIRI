@@ -13,7 +13,7 @@ from urllib.parse import quote, urlencode
 
 from . import panda_secrets, services
 from .clients.transfer import consent_required
-from .errors import GlobusIriError, LoginRequired, PandaError
+from .errors import GlobusIriError, LoginRequired, PandaError, RemoteError
 from .tokens import E2ETokenManager, HttpsTokenManager, IriTokenManager
 
 OK, WARN, FAIL, SKIP = "OK", "WARN", "FAIL", "SKIPPED"
@@ -133,14 +133,29 @@ def iri_api_check(config, site):
 
 
 def iri_workdir_check(config, site):
+    """stat remote.work_dir; backends without stat (ALCF answers HTTP 501) are checked with ls."""
+    op = "stat"
     try:
-        services.iri_client(config, site).stat(site.work_dir, resource_id=site.work_dir_resource_id)
+        client = services.iri_client(config, site)
+        try:
+            client.stat(site.work_dir, resource_id=site.work_dir_resource_id)
+        except RemoteError as exc:
+            if exc.status != 501:
+                raise
+            op = "ls"
+            try:
+                client.ls(site.work_dir, resource_id=site.work_dir_resource_id)
+            except RemoteError as exc2:
+                if exc2.status != 501:
+                    raise
+                return Check(site.name, "iri", "work_dir", WARN,
+                             f"this IRI backend implements neither stat nor ls; {site.work_dir} not checked")
     except LoginRequired as exc:
-        return Check(site.name, "iri", "work_dir", FAIL, f"stat {site.work_dir}: {exc.args[0]}",
+        return Check(site.name, "iri", "work_dir", FAIL, f"{op} {site.work_dir}: {exc.args[0]}",
                      f"globusiri iri login {site.name} --force")
     except GlobusIriError as exc:
-        return Check(site.name, "iri", "work_dir", FAIL, f"stat {site.work_dir}: {exc}")
-    return Check(site.name, "iri", "work_dir", OK, f"stat {site.work_dir}")
+        return Check(site.name, "iri", "work_dir", FAIL, f"{op} {site.work_dir}: {exc}")
+    return Check(site.name, "iri", "work_dir", OK, f"{op} {site.work_dir}" + (" (stat not implemented)" if op == "ls" else ""))
 
 
 # ---------------------------------------------------------------------- live: https

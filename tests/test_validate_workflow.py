@@ -199,3 +199,35 @@ def test_run_cleanup_skipped_when_job_failed(cfg, monkeypatch, work):
     assert not [c for c in iri.calls if c[0] == "rm"]
     st = workflow.RunState.load(work.run_dir("R5"))
     assert st.data["steps"]["cleanup"]["status"] == "skipped"
+
+
+class NoStatIri:
+    """ALCF-like backend: stat answers HTTP 501."""
+
+    def __init__(self, ls_status=None):
+        self.ls_status = ls_status
+        self.calls = []
+
+    def stat(self, path, **kw):
+        from globusiri.errors import RemoteError
+
+        self.calls.append("stat")
+        raise RemoteError("IRI stat: HTTP 501: not implemented", status=501)
+
+    def ls(self, path, **kw):
+        from globusiri.errors import RemoteError
+
+        self.calls.append("ls")
+        if self.ls_status:
+            raise RemoteError(f"IRI ls: HTTP {self.ls_status}", status=self.ls_status)
+        return []
+
+
+@pytest.mark.parametrize("ls_status,expected", [(None, V.OK), (501, V.WARN), (500, V.FAIL)])
+def test_workdir_check_falls_back_to_ls_when_stat_is_501(cfg, monkeypatch, ls_status, expected):
+    iri = NoStatIri(ls_status)
+    monkeypatch.setattr(services, "iri_client", lambda c, s, **kw: iri)
+    check = V.iri_workdir_check(cfg, cfg.site("ALCF_CRUX"))
+    assert iri.calls == ["stat", "ls"] and check.status == expected
+    if expected == V.OK:
+        assert check.detail.startswith("ls ") and "stat not implemented" in check.detail
