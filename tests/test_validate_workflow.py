@@ -202,17 +202,17 @@ def test_run_cleanup_skipped_when_job_failed(cfg, monkeypatch, work):
 
 
 class NoStatIri:
-    """ALCF-like backend: stat answers HTTP 501."""
+    """stat fails with the given status (501 at ALCF; NERSC's flaky task failure has none)."""
 
-    def __init__(self, ls_status=None):
-        self.ls_status = ls_status
+    def __init__(self, stat_status=501, ls_status=None):
+        self.stat_status, self.ls_status = stat_status, ls_status
         self.calls = []
 
     def stat(self, path, **kw):
         from globusiri.errors import RemoteError
 
         self.calls.append("stat")
-        raise RemoteError("IRI stat: HTTP 501: not implemented", status=501)
+        raise RemoteError("IRI stat: failed", status=self.stat_status)
 
     def ls(self, path, **kw):
         from globusiri.errors import RemoteError
@@ -223,11 +223,15 @@ class NoStatIri:
         return []
 
 
-@pytest.mark.parametrize("ls_status,expected", [(None, V.OK), (501, V.WARN), (500, V.FAIL)])
-def test_workdir_check_falls_back_to_ls_when_stat_is_501(cfg, monkeypatch, ls_status, expected):
-    iri = NoStatIri(ls_status)
+@pytest.mark.parametrize("stat_status,ls_status,expected,detail", [
+    (501, None, V.OK, "stat not implemented"),      # ALCF
+    (None, None, V.WARN, "stat failed"),            # NERSC: stat task failed, ls works
+    (501, 501, V.WARN, "neither stat nor ls"),
+    (501, 500, V.FAIL, "ls: IRI ls: HTTP 500"),
+    (None, 500, V.FAIL, "ls: IRI ls: HTTP 500"),
+])
+def test_workdir_check_falls_back_to_ls(cfg, monkeypatch, stat_status, ls_status, expected, detail):
+    iri = NoStatIri(stat_status, ls_status)
     monkeypatch.setattr(services, "iri_client", lambda c, s, **kw: iri)
     check = V.iri_workdir_check(cfg, cfg.site("ALCF_CRUX"))
-    assert iri.calls == ["stat", "ls"] and check.status == expected
-    if expected == V.OK:
-        assert check.detail.startswith("ls ") and "stat not implemented" in check.detail
+    assert iri.calls == ["stat", "ls"] and check.status == expected and detail in check.detail

@@ -133,29 +133,34 @@ def iri_api_check(config, site):
 
 
 def iri_workdir_check(config, site):
-    """stat remote.work_dir; backends without stat (ALCF answers HTTP 501) are checked with ls."""
-    op = "stat"
+    """stat remote.work_dir; if stat fails, check it with ls instead.
+
+    ALCF does not implement stat (HTTP 501): ls then gives OK. NERSC's stat sometimes fails
+    ("Unable to get sfapi data: 403") while ls works: that is a WARN, which does not block a
+    submission (job submission itself uses mkdir/chmod, not stat).
+    """
+    wd = site.work_dir
+    fix = f"globusiri iri login {site.name} --force"
     try:
         client = services.iri_client(config, site)
         try:
-            client.stat(site.work_dir, resource_id=site.work_dir_resource_id)
-        except RemoteError as exc:
-            if exc.status != 501:
-                raise
-            op = "ls"
+            client.stat(wd, resource_id=site.work_dir_resource_id)
+            return Check(site.name, "iri", "work_dir", OK, f"stat {wd}")
+        except RemoteError as stat_exc:
             try:
-                client.ls(site.work_dir, resource_id=site.work_dir_resource_id)
-            except RemoteError as exc2:
-                if exc2.status != 501:
-                    raise
-                return Check(site.name, "iri", "work_dir", WARN,
-                             f"this IRI backend implements neither stat nor ls; {site.work_dir} not checked")
+                client.ls(wd, resource_id=site.work_dir_resource_id)
+            except RemoteError as ls_exc:
+                if stat_exc.status == 501 and ls_exc.status == 501:
+                    return Check(site.name, "iri", "work_dir", WARN,
+                                 f"this IRI backend implements neither stat nor ls; {wd} not checked")
+                return Check(site.name, "iri", "work_dir", FAIL, f"stat {wd}: {stat_exc}; ls: {ls_exc}")
+            if stat_exc.status == 501:
+                return Check(site.name, "iri", "work_dir", OK, f"ls {wd} (stat not implemented)")
+            return Check(site.name, "iri", "work_dir", WARN, f"ls {wd} works, but stat failed: {stat_exc}")
     except LoginRequired as exc:
-        return Check(site.name, "iri", "work_dir", FAIL, f"{op} {site.work_dir}: {exc.args[0]}",
-                     f"globusiri iri login {site.name} --force")
+        return Check(site.name, "iri", "work_dir", FAIL, f"{wd}: {exc.args[0]}", fix)
     except GlobusIriError as exc:
-        return Check(site.name, "iri", "work_dir", FAIL, f"{op} {site.work_dir}: {exc}")
-    return Check(site.name, "iri", "work_dir", OK, f"{op} {site.work_dir}" + (" (stat not implemented)" if op == "ls" else ""))
+        return Check(site.name, "iri", "work_dir", FAIL, f"{wd}: {exc}")
 
 
 # ---------------------------------------------------------------------- live: https
