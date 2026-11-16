@@ -268,3 +268,35 @@ def test_run_log_path_from_job_and_isolated_between_runs(env, work):
     assert "run L2:" in l2 and "L3" not in l2
     assert not (work.runs_dir / "L2" / "globusiri.log").exists()
     assert "L2" not in (work.runs_dir / "L3" / "globusiri.log").read_text()
+
+
+def test_failed_run_resumed_with_monitor_or_submit(env, capsys):
+    from globusiri.cli import build_parser, cmd_submit
+
+    g, iri, gl = env
+    g.submit("perlmutter_example_job.yaml", set=E2E_JOB, run_id="R1", validate=False)
+    gl.tasks["T1"] = "FAILED"
+    assert g.monitor()["R1"]["status"] == "failed"
+    assert g.monitor(["R1"])["R1"]["status"] == "failed"  # a plain monitor leaves it failed
+    with pytest.raises(ConfigError, match="needs RUN_ID"):
+        g.monitor(resume=True)
+
+    # monitor --resume: the failed stage-in goes back to pending and is submitted again
+    r = g.monitor(["R1"], resume=True)["R1"]
+    assert r["status"] == "active" and steps(r)["e2e_stagein"] == "running" and len(gl.submitted) == 2
+    assert steps(r)["validate"] == "skipped"  # done/skipped steps are kept
+
+    gl.tasks["T2"] = "FAILED"
+    assert g.monitor()["R1"]["status"] == "failed"
+
+    # submit --resume does the same from the CLI
+    args = build_parser().parse_args(["submit", "--resume", "R1", "--no-validate"])
+    assert cmd_submit(args, g) == 0
+    assert "R1" in capsys.readouterr().out
+    r = g.run_state("R1")
+    assert r["status"] == "active" and len(gl.submitted) == 3 and r["options"]["validate"] is False
+
+    with pytest.raises(ConfigError, match="not both"):
+        cmd_submit(build_parser().parse_args(["submit", "--resume", "R1", "--job", "x.yaml"]), g)
+    with pytest.raises(ConfigError, match="needs --job"):
+        cmd_submit(build_parser().parse_args(["submit"]), g)

@@ -51,6 +51,25 @@ until the runs finish. Results are saved as `runs/hello-pm-001/result.txt` and
 `runs/hello-crux-001/result.txt` under WORK_DIR. Use a new run ID for each submission, or
 omit `--run-id` to generate a unique ID. Job files can be reused without editing.
 
+### Retry a failed run
+
+A run that failed, for example at token validation or because a facility API returned an error,
+can be retried under the same run ID:
+
+```bash
+globusiri runs hello-pm-001                     # which step failed, and why
+globusiri submit --resume hello-pm-001          # reopen it and make one pass
+globusiri monitor --resume hello-pm-001 hello-crux-001   # same, for several runs
+globusiri monitor                               # continue as usual (or keep the daemon running)
+```
+
+`--resume` makes the run `active` again and sets its failed steps back to `pending`. Steps
+already done are kept, so a job that was already submitted is not submitted again.
+`submit --resume RUN_ID --no-validate` also skips token validation for that run. Running
+`submit --job ... --run-id hello-pm-001` again does not work, because a run ID is never reused.
+`globusiri run --resume RUN_ID` resumes a run and waits for it to finish. See
+[cli.md](cli.md#non-blocking-workflow-submit-monitor-daemon).
+
 ## Your own job script (no template)
 
 [`perlmutter_script_job.yaml`](../src/globusiri/data/jobs/perlmutter_script_job.yaml) sets

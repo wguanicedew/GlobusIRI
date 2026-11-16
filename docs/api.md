@@ -65,7 +65,8 @@ g.job_cleanup("NERSC_Perlmutter", sub["run_id"])
 | `globusiri run --job` | `g.run(job, site=None, *, set, run_id, stagein_manifest, stageout_manifest, validate, wait, interval, echo)` → `RunState` |
 | `globusiri run --resume` | `g.resume(run_id, *, validate, wait, interval, echo)` → `RunState` |
 | `globusiri submit` | `g.submit(job, site=None, *, set, inputs, overrides, run_id, stagein_manifest, stageout_manifest, validate, advance=True, max_attempts=5, echo)` → state dict; creates the run and makes the first non-blocking pass |
-| `globusiri monitor [RUN_ID...]` | `g.monitor(run_ids=None, *, echo)` → `{run_id: state dict or error string}`; one pass over every active run |
+| `globusiri monitor [RUN_ID...]` | `g.monitor(run_ids=None, *, resume=False, echo)` → `{run_id: state dict or error string}`; one pass over every active run. `resume=True` first reopens the given failed runs |
+| `globusiri submit --resume RUN_ID` | `g.reopen(run_id, *, validate=None)` → state dict, then `g.monitor([run_id])`. `reopen` makes a failed run active again (failed steps → pending, done steps kept) without advancing it |
 | — | `g.advance(run_id, *, echo)` → state dict; one pass over one run (raises `workflow.RunBusy` if another process holds it) |
 | `globusiri daemon` | `g.daemon(*, interval=60, echo, stop, max_passes)`; `monitor()` in a loop until `stop()` is true |
 | `globusiri cancel RUN_ID` | `g.cancel(run_id, *, echo)` → state dict |

@@ -484,6 +484,13 @@ class GlobusIRI:
         return workflow.resume(self.config, run_id, no_wait=not wait, do_validate=validate, interval=interval,
                                echo=echo or (lambda *a: None))
 
+    def reopen(self, run_id, *, validate=None):
+        """Make a failed (or cancelled) run active again without advancing it: failed steps go
+        back to pending, done steps are kept. validate: None keeps the run's setting.
+        Returns the state dict; monitor() or daemon() then continue the run."""
+        workflow.reopen(self.config, run_id, do_validate=validate)
+        return self.run_state(run_id)
+
     def run_state(self, run_id):
         """The saved state.json of a run, as a dict (plus "plugin_status")."""
         data = workflow.RunState.load(self.config.paths.run_dir(run_id)).data
@@ -525,9 +532,15 @@ class GlobusIRI:
         workflow.advance(self.config, run_id, echo=echo)
         return self.run_state(run_id)
 
-    def monitor(self, run_ids=None, *, echo=None):
+    def monitor(self, run_ids=None, *, resume=False, echo=None):
         """One pass over the given runs (default: every active run). Never raises for a single
-        run. Returns {run_id: state dict, or an error string if the run could not be advanced}."""
+        run. Returns {run_id: state dict, or an error string if the run could not be advanced}.
+        resume=True first reopens the given (failed) runs; it needs explicit run_ids."""
+        if resume:
+            if not run_ids:
+                raise ConfigError("monitor --resume needs RUN_ID(s)")
+            for rid in run_ids:
+                workflow.reopen(self.config, rid)
         out = {}
         for rid, r in workflow.monitor(self.config, run_ids, echo=echo).items():
             out[rid] = {**r.data, "plugin_status": workflow.plugin_status(r.data)} if isinstance(r, workflow.RunState) else r

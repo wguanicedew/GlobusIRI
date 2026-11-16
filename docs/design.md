@@ -364,7 +364,7 @@ class TokenManager:
 the three tokens are not interchangeable (§1):
 
 - **IRI.** The facility's validation call (NERSC: `account/projects`; ALCF: filesystem `ls` on
-  Home), then an IRI `stat` on `remote.work_dir`.
+  Home), then an IRI `stat` on `remote.work_dir`, falling back to `ls` when `stat` fails.
 - **HTTPS.** A `GET` of the mapped `remote.work_dir` on the collection's `https_server`.
   `--write-test` adds a `PUT` and `GET` round trip.
 - **E2E.** `get_endpoint` and `operation_ls` on every configured endpoint.

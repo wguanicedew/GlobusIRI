@@ -90,7 +90,7 @@ The output lists every kind that was skipped and why, for example
 
 | Kind | Offline checks (always) | Live checks (skipped with `--offline`) |
 |---|---|---|
-| `iri` | Access file exists and has mode 0600; not expired; lifetime ≥ `--min-lifetime`; `base_url` and `resource_id` match `sites.yaml`; refresh file present on the token host | NERSC: `GET /api/v1/account/projects`. ALCF: filesystem `ls` on Home. Then IRI `stat` on `remote.work_dir`, which checks the token can reach the site's work area |
+| `iri` | Access file exists and has mode 0600; not expired; lifetime ≥ `--min-lifetime`; `base_url` and `resource_id` match `sites.yaml`; refresh file present on the token host | NERSC: `GET /api/v1/account/projects`. ALCF: filesystem `ls` on Home. Then IRI `stat` on `remote.work_dir`, which checks that the token can reach the site's work area. If `stat` fails, `ls` is tried instead. A working `ls` gives OK when `stat` is not implemented (ALCF, HTTP 501), and WARN otherwise. A WARN does not block a submission |
 | `https` | Same file checks; `client_id`, `collection_id`, and `https_server` present; `collection_id` matches a pinned `https.collection_id` if one is set | `GET` on `remote.work_dir` (mapped through `https.path_map`) at `https_server`. A 401 or 403 means a token or consent problem; a 404 means a path or `path_map` problem. `--write-test` also does a `PUT` and then a `GET` of `<work_dir>/.globusiri_validate` (a small file that is overwritten each time) |
 | `e2e` | Same file checks; `client_id` present | `get_endpoint` for each endpoint in `e2e.endpoints` (checks that the token is accepted and the `id` exists). `operation_ls` on each site's `e2e.base_path` (mapped through that endpoint's `path_map`) and on the storage `src_path`/`dst_path`. `ConsentRequired` names the endpoint that is missing `data_access` consent |
 
@@ -314,7 +314,8 @@ globusiri run --job perlmutter_example_job.yaml \
 globusiri submit [SITE] --job JOB_FILE [--set key=value]... [--input NAME=LOCAL]...
                  [--stagein-manifest in.txt] [--stageout-manifest out.txt]
                  [--run-id ID] [--no-validate] [--max-attempts 5] [--json]
-globusiri monitor [RUN_ID...] [--json]
+globusiri submit --resume RUN_ID [--no-validate] [--json]
+globusiri monitor [RUN_ID...] [--resume] [--json]
 globusiri daemon [--interval 60] [--once]
 globusiri runs [RUN_ID] [--status active|finished|failed|cancelled] [--reindex] [--json]
 globusiri cancel RUN_ID
@@ -357,8 +358,15 @@ retried on the next pass. After `--max-attempts` failed passes in a row, the run
 `monitor` step is the exception: once the IRI job exists, failed status queries are retried without
 limit, so a facility API outage never leaves a running job untracked; use `cancel` to stop such a
 run. A failed log
-download is recorded on the step and does not fail the run. To retry a failed run, use
-`globusiri run --resume RUN_ID [--no-wait]`.
+download is recorded on the step and does not fail the run.
+
+**Retrying a failed run.** `globusiri submit --resume RUN_ID` and `globusiri monitor --resume
+RUN_ID...` reopen a failed run without blocking. The run becomes `active`, its failed steps go
+back to `pending`, and steps already `done` or `skipped` are kept, so a submitted IRI job is never
+submitted twice. Then one pass runs, as with `monitor`, and `monitor` or `daemon` continue the run
+from there. `submit --resume --no-validate` also turns off the run's token validation. The blocking
+form is `globusiri run --resume RUN_ID`. A run ID is never reused for a new run: `submit --run-id
+ID` on an existing run fails and points to `--resume`.
 
 **Many jobs, one monitor.** All commands must use the same `GLOBUSIRI_WORK_DIR` and site
 configuration. Any number of `submit` commands can create runs there. `monitor` with no run

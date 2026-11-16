@@ -326,10 +326,19 @@ def print_runs(runs, as_json=False):
 
 
 def cmd_submit(args, api):
-    r = api.submit(args.job, args.site, set=args.set, inputs=args.input, run_id=args.run_id,
-                   stagein_manifest=args.stagein_manifest, stageout_manifest=args.stageout_manifest,
-                   validate=not args.no_validate, max_attempts=args.max_attempts,
-                   echo=None if args.json else print)
+    if args.resume:
+        if args.job:
+            raise ConfigError("give --job JOB_FILE (new run) or --resume RUN_ID (existing run), not both")
+        api.reopen(args.resume, validate=False if args.no_validate else None)
+        res = api.monitor([args.resume], echo=None if args.json else print)[args.resume]
+        if not isinstance(res, dict):  # e.g. busy: another monitor holds the run
+            print(f"{args.resume}: {res}", file=sys.stderr)
+            res = api.run_state(args.resume)
+        r = res
+    elif not args.job:
+        raise ConfigError("submit needs --job JOB_FILE (or --resume RUN_ID)")
+    else:
+        r = _submit_new(args, api)
     if args.json:
         print_json(r)
     else:
@@ -339,8 +348,15 @@ def cmd_submit(args, api):
     return EXIT_OK if r["status"] != "failed" else JobFailed.exit_code
 
 
+def _submit_new(args, api):
+    return api.submit(args.job, args.site, set=args.set, inputs=args.input, run_id=args.run_id,
+                   stagein_manifest=args.stagein_manifest, stageout_manifest=args.stageout_manifest,
+                      validate=not args.no_validate, max_attempts=args.max_attempts,
+                      echo=None if args.json else print)
+
+
 def cmd_monitor(args, api):
-    res = api.monitor(args.run_ids or None, echo=None if args.json else print)
+    res = api.monitor(args.run_ids or None, resume=args.resume, echo=None if args.json else print)
     if args.json:
         print_json(res)
         return EXIT_OK
@@ -545,7 +561,9 @@ def build_parser():
     s = sub.add_parser("submit", parents=[common],
                        help="start a workflow run without waiting; `monitor` or `daemon` drives it on")
     s.add_argument("site", nargs="?", metavar="SITE")
-    s.add_argument("--job", required=True, metavar="JOB_FILE")
+    s.add_argument("--job", metavar="JOB_FILE")
+    s.add_argument("--resume", metavar="RUN_ID",
+                   help="retry a failed run: failed steps go back to pending, done steps are kept")
     s.add_argument("--run-id")
     s.add_argument("--set", action="append", metavar="KEY=VALUE")
     s.add_argument("--input", action="append", metavar="NAME=LOCAL", help="add/override an input file")
@@ -559,6 +577,8 @@ def build_parser():
     s = sub.add_parser("monitor", parents=[common],
                        help="one pass: check each active run's current step and trigger the next")
     s.add_argument("run_ids", nargs="*", metavar="RUN_ID", help="default: every active run")
+    s.add_argument("--resume", action="store_true",
+                   help="first reopen the given failed runs (failed steps go back to pending)")
     s.add_argument("--json", action="store_true")
 
     s = sub.add_parser("daemon", parents=[common], help="run `monitor` in a loop")

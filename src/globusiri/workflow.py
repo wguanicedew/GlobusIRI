@@ -187,7 +187,8 @@ def create(config, job, site, *, run_id=None, do_validate=True, stagein_manifest
     run_dir = config.paths.run_dir(run_id)
     with run_lock(run_dir, blocking=True), run_logging(run_log_path(config, run_id, job), run_id):
         if (run_dir / "state.json").exists():
-            raise ConfigError(f"run {run_id} already exists; use `globusiri monitor {run_id}` or `run --resume`")
+            raise ConfigError(f"run {run_id} already exists; continue it with `globusiri monitor {run_id}`, "
+                                  f"or retry a failed run with `globusiri submit --resume {run_id}`")
         log.info("run %s: created at %s (job %s)", run_id, site.name, job.source or job.name)
         state = RunState(run_dir)
         state.data.update({"run_id": run_id, "site": site.name, "status": ACTIVE, "current_step": STEPS[0],
@@ -649,14 +650,18 @@ def run(config, job, site, *, run_id=None, no_wait=False, do_validate=True, stag
     return state
 
 
-def resume(config, run_id, *, do_validate=True, **kwargs):
-    """Re-open a run (failed steps go back to pending) and continue it in blocking mode."""
+def reopen(config, run_id, *, do_validate=None):
+    """Make a run active again: failed steps go back to pending, steps already done are kept.
+    do_validate: True/False sets the run's validate option; None keeps it. Returns (state, job, site).
+    The run is not advanced; run(), advance() or monitor() continue it."""
     with run_lock(config.paths.run_dir(run_id), blocking=True):
         state, job, site = load(config, run_id)
         state.data["status"] = ACTIVE
         state.data.pop("finished_at", None)
         state.data.pop("message", None)
-        state.data.setdefault("options", {})["validate"] = bool(do_validate)
+        state.data.pop("last_error", None)
+        if do_validate is not None:
+            state.data.setdefault("options", {})["validate"] = bool(do_validate)
         for st in state.data["steps"].values():
             if st.get("status") == "failed":
                 # retry from scratch; a failed transfer is resubmitted (Globus sync_level
@@ -665,4 +670,11 @@ def resume(config, run_id, *, do_validate=True, **kwargs):
                     st.pop(k, None)
                 st["status"] = "pending"
         state.save()
+    log.info("run %s reopened", run_id)
+    return state, job, site
+
+
+def resume(config, run_id, *, do_validate=True, **kwargs):
+    """Re-open a run (failed steps go back to pending) and continue it in blocking mode."""
+    state, job, site = reopen(config, run_id, do_validate=do_validate)
     return run(config, job, site, resume_state=state, **kwargs)
