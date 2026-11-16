@@ -202,31 +202,48 @@ def test_shell_examples_produce_documented_outputs(cfg, tmp_path, job_name, outp
     assert (tmp_path / output).read_text().strip() == expected
 
 
-FAKE_LAUNCHER = """#!/bin/bash
-# fake srun/mpiexec: run the trailing `bash -c ...` once per rank
+@pytest.mark.parametrize("n_node", [1, 2])
+def test_perlmutter_mpi_example_runs_once_per_rank(cfg, tmp_path, n_node):
+    """NERSC's IRI runs the script under srun: one copy per rank, run concurrently here."""
+    import os
+
+    job, site = resolve_job(cfg, "perlmutter_mpi_job.yaml", overrides=[f"resources.n_node={n_node}"])
+    ph = jobs.placeholders(job, site, "example", {})
+    ph["work_dir"] = str(tmp_path)
+    script = jobs.render_template(cfg.paths.find_template(job.template_file), ph, tmp_path / "job.sh")
+    assert "srun" not in job.template_vars["command"].replace("srun with", "")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "PMI", "PALS_", "OMPI_"))}
+    nproc = 4 * n_node
+    ranks = [subprocess.Popen(["/bin/bash", str(script)], env={**env, "SLURM_PROCID": str(r), "SLURM_NTASKS": str(nproc)},
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+             for r in reversed(range(nproc))]
+    for p in ranks:
+        out, err = p.communicate(timeout=60)
+        assert p.returncode == 0, out + err
+    lines = (tmp_path / "ranks.txt").read_text().splitlines()
+    assert [line.split()[1] for line in lines] == [str(r) for r in range(nproc)]
+
+
+FAKE_MPIEXEC = """#!/bin/bash
+# fake PALS mpiexec: run the trailing `bash -c ...` once per rank
 while [ $# -gt 0 ] && [ "$1" != bash ]; do shift; done
-for r in $(seq 0 $((GLOBUSIRI_NPROC - 1))); do
-    SLURM_PROCID=$r SLURM_NTASKS=$GLOBUSIRI_NPROC PALS_RANKID=$r PALS_LOCAL_RANKID=$r "$@"
-done
+for r in $(seq 0 $((GLOBUSIRI_NPROC - 1))); do PALS_RANKID=$r PALS_LOCAL_RANKID=$r "$@"; done
 """
 
 
-@pytest.mark.parametrize("job_name,launcher,n_node", [
-    ("perlmutter_mpi_job.yaml", "srun", 1), ("perlmutter_mpi_job.yaml", "srun", 2),
-    ("crux_mpi_job.yaml", "mpiexec", 1), ("crux_mpi_job.yaml", "mpiexec", 2),
-])
-def test_mpi_examples_start_four_ranks_per_node(cfg, tmp_path, job_name, launcher, n_node):
+@pytest.mark.parametrize("n_node", [1, 2])
+def test_crux_mpi_example_starts_ranks_with_mpiexec(cfg, tmp_path, n_node):
+    """Crux's IRI drops the per-process fields: the script runs once and mpiexec starts the ranks."""
     import os
 
-    job, site = resolve_job(cfg, job_name, overrides=[f"resources.n_node={n_node}"])
-    assert job.resources["launcher"] is None
+    job, site = resolve_job(cfg, "crux_mpi_job.yaml", overrides=[f"resources.n_node={n_node}"])
     ph = jobs.placeholders(job, site, "example", {})
     ph["work_dir"] = str(tmp_path)
     script = jobs.render_template(cfg.paths.find_template(job.template_file), ph, tmp_path / "job.sh")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / launcher).write_text(FAKE_LAUNCHER)
-    (bin_dir / launcher).chmod(0o755)
+    (bin_dir / "mpiexec").write_text(FAKE_MPIEXEC)
+    (bin_dir / "mpiexec").chmod(0o755)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "PMI", "PALS_", "OMPI_"))}
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     subprocess.run(["/bin/bash", str(script)], check=True, capture_output=True, env=env)
@@ -413,11 +430,10 @@ def test_script_example_runs(cfg, tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     job, site = resolve_job(cfg, "perlmutter_script_job.yaml")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "srun").write_text("#!/bin/bash\nfor r in 0 1 2 3; do SLURM_PROCID=$r \"$@\"; done\n")
-    (bin_dir / "srun").chmod(0o755)
-    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
-    subprocess.run(["/bin/bash", job.script_file], check=True, capture_output=True, env=env, cwd=tmp_path)
+    assert "\nsrun" not in Path(job.script_file).read_text()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SLURM_")}
+    for rank in (3, 2, 1, 0):  # one copy per rank, as NERSC's IRI starts it
+        r = subprocess.run(["/bin/bash", job.script_file], check=True, capture_output=True, text=True,
+                           env={**env, "SLURM_PROCID": str(rank), "SLURM_NTASKS": "4"}, cwd=tmp_path)
+        assert r.stdout.startswith(f"rank {rank} of 4 on ")
     assert (tmp_path / "result.txt").read_text().strip() == "Job completed"
-    assert len((tmp_path / "ranks.txt").read_text().splitlines()) == 4

@@ -260,8 +260,8 @@ inputs and empty otherwise; when it is empty, the block does nothing:
 
 - The block works out the rank from `SLURM_PROCID`, `PMIX_RANK`, `PMI_RANK`, `PALS_RANKID` or
   `OMPI_COMM_WORLD_RANK`. If none of these is set, the rank is 0. This means the block works both
-  when the scheduler runs the script once (`launcher: null` or `single`) and when it runs the script
-  once per rank (`srun`, `mpirun`, ...).
+  when the script runs once (Crux, where the script starts `mpiexec` itself) and when it runs once
+  per rank (Perlmutter, where NERSC's IRI starts the script under `srun`).
 - Rank 0 extracts the archive in the run dir, and then creates `.globusiri_inputs.done`.
   If extraction fails, it creates `.globusiri_inputs.failed` and exits.
 - The other ranks wait until `.globusiri_inputs.done` appears and then continue. They exit

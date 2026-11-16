@@ -12,7 +12,7 @@ export GLOBUSIRI_NPROC=$(({nNode} * {nProcessPerNode}))
 export GLOBUSIRI_NCORE_PER_PROC={nCorePerProcess}
 
 # ---- input stage-in: rank 0 extracts the input archive, the other ranks wait ----
-# The script may run once (launcher null/single) or once per rank (launcher srun/mpirun);
+# The script may run once, or once per rank (NERSC's IRI starts it under srun per rank);
 # the rank comes from the launcher's environment and is 0 if none is set. Other ranks give
 # up after $GLOBUSIRI_STAGEIN_TIMEOUT seconds (default 1800).
 GLOBUSIRI_ARCHIVE="{inputArchive}"

@@ -1,22 +1,32 @@
 # 4 processes per node on Perlmutter CPU nodes. No PanDA credentials or E2E transfers.
-# The job script runs once (launcher: null) and starts the ranks itself with srun.
+# NERSC's IRI starts the job script itself with srun, one copy per rank
+# (process_count = n_node x n_process_per_node, cpu_cores_per_process CPUs each). So
+# `command` is what EACH RANK runs: do not call srun in it. A nested srun waits for CPUs the
+# ranks already hold ("Requested nodes are busy") until the job's time limit.
 # It uses the generic shell_job_template.sh: perlmutter_iri_submit_template.sh is the
 # PanDA Harvester pilot template, not a standalone job script.
 #   globusiri submit --job perlmutter_mpi_job.yaml
 #   globusiri submit --job perlmutter_mpi_job.yaml --set resources.n_node=2   # 8 ranks
-# Each rank prints one line; the sorted lines are downloaded as runs/<run_id>/ranks.txt.
-# For a real MPI program, replace `bash -c '...'` with the executable (add it to `inputs`).
+# Each rank writes rank_<N>.txt; rank 0 gathers them into ranks.txt (downloaded).
+# For a real MPI program, put the executable here (add it to `inputs`): it runs once per rank.
 site: NERSC_Perlmutter
 name: perlmutter-mpi
 template_file: shell_job_template.sh
 template_vars:
   command: |
-    # GLOBUSIRI_* come from `resources` (see shell_job_template.sh).
-    srun --nodes="$GLOBUSIRI_NNODE" --ntasks-per-node="$GLOBUSIRI_NPROC_PER_NODE" \
-         --cpus-per-task="$GLOBUSIRI_NCORE_PER_PROC" --cpu-bind=cores \
-         bash -c 'echo "rank $SLURM_PROCID of $SLURM_NTASKS on $(hostname)"' | sort -n -k2 > ranks.txt
-    cat ranks.txt
-    test "$(wc -l < ranks.txt)" -eq "$GLOBUSIRI_NPROC"
+    # Runs in every rank. SLURM_PROCID is this rank; GLOBUSIRI_* come from `resources`.
+    echo "rank $SLURM_PROCID of $GLOBUSIRI_NPROC on $(hostname)" > "rank_$SLURM_PROCID.txt"
+    if [ "$SLURM_PROCID" = 0 ]; then
+        # rank 0 waits (at most 5 min) for every rank's file, then gathers them
+        waited=0
+        while [ "$(find . -maxdepth 1 -name 'rank_*.txt' | wc -l)" -lt "$GLOBUSIRI_NPROC" ]; do
+            if [ "$waited" -ge 300 ]; then echo "not every rank reported" >&2; exit 1; fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+        cat rank_*.txt | sort -n -k2 > ranks.txt
+        cat ranks.txt
+    fi
 resources:
   project: m2616
   queue: debug
@@ -25,7 +35,7 @@ resources:
   n_core_per_node: 256        # Slurm CPUs: 128 cores x 2 hyperthreads; 256 / 4 = 64 per rank
   n_process_per_node: 4
   duration: 10m
-  launcher: null              # the script runs once; srun inside it starts the ranks
+  launcher: null              # NERSC's IRI runs the script under srun with process_count tasks
 inputs: {}
 staging:
   e2e:
