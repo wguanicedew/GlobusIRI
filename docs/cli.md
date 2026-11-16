@@ -239,10 +239,12 @@ which needs `--run-id`.
 ```bash
 globusiri e2e stagein  SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
                             [--rucio-deterministic --scope SCOPE [--name NAME]]
-                            [--src-endpoint LABEL] [--sync-level exists] [--no-wait]
+                            [--src-endpoint LABEL] [--sync-level exists]
+                            [--run-id ID] [--no-validate] [--no-wait]
 globusiri e2e stageout SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
                             [--rucio-deterministic --scope SCOPE [--name NAME]]
-                            [--dst-endpoint LABEL] [--no-wait]
+                            [--dst-endpoint LABEL] [--sync-level exists]
+                            [--run-id ID] [--no-validate] [--no-wait]
 globusiri e2e cleanup  SITE (--manifest FILE [--scope SCOPE] | --rucio SCOPE:NAME... | PATH...)
                             [--force] [--dry-run] [--no-wait]
 globusiri e2e task     TASK_ID [--wait] [--failures]
@@ -250,6 +252,26 @@ globusiri e2e cancel   TASK_ID
 ```
 
 A manifest has one `SRC_PATH DST_PATH [SCOPE[:NAME]]` entry per line. Lines starting with `#` are ignored.
+
+**Submit now, monitor later.** Every `e2e stagein`/`stageout` is a tracked *transfer run*, with
+a run ID and state under `<WORK_DIR>/runs/<run_id>/`, like a job run without the IRI job. It
+validates the E2E token, unless `--no-validate` is given, and submits the Globus task. Without
+`--no-wait`, it waits for the task to finish. With `--no-wait`, it returns right after
+submitting, and `globusiri monitor` or `daemon` check the transfer on later passes, together
+with any job runs:
+
+```bash
+globusiri e2e stagein  NERSC_Perlmutter --rucio mc23:f1 --rucio mc23:f2 --no-wait
+globusiri e2e stagein  ALCF_CRUX --manifest crux_in.txt --run-id crux-in-001 --no-wait
+globusiri e2e stageout NERSC_Perlmutter /global/cfs/.../out.root /pnfs/.../out.root --no-wait
+globusiri runs --status active      # STEP e2e_stagein / e2e_stageout
+globusiri monitor                   # checks every transfer (and job) once
+```
+
+A transfer run finishes when its Globus task `SUCCEEDED` and fails if the task fails or
+`e2e.timeout` passes. `globusiri cancel RUN_ID` cancels its Globus task. `globusiri monitor
+--resume RUN_ID` (or `submit --resume RUN_ID`) submits a failed transfer again. Globus skips
+files that already arrived (`sync_level`).
 
 **Destination file or Rucio deterministic path.** By default (`rucio_deterministic` false),
 `DST` is the destination file and is used as given. With `rucio_deterministic` and a `scope`,
@@ -346,7 +368,9 @@ globusiri runs [RUN_ID] [--status active|finished|failed|cancelled] [--reindex] 
 globusiri cancel RUN_ID
 ```
 
-These run the same steps as `run`, without ever waiting on a transfer or a job:
+These run the same steps as `run`, without ever waiting on a transfer or a job. `monitor`,
+`daemon`, `runs`, `cancel` and `--resume` also handle the transfer runs made by
+[`e2e stagein/stageout`](#globus-e2e-staging):
 
 - **`submit`** creates the run (`<WORK_DIR>/runs/<RUN_ID>/state.json` and `job.yaml`) and makes
   the first pass. That pass validates the tokens and starts the E2E stage-in. If the job has

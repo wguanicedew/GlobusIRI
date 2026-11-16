@@ -250,16 +250,15 @@ def cmd_e2e_stage(args, api):
             raise ConfigError("--rucio-deterministic needs --scope SCOPE")
         if args.name and not pairs:
             raise ConfigError("--name needs one SRC DST")
-        fn = api.e2e_stagein if args.action == "stagein" else api.e2e_stageout
-        ep = {"src_endpoint" if args.action == "stagein" else "dst_endpoint": args.endpoint}
-        r = fn(args.site, pairs, manifest=args.manifest, rucio=args.rucio, sync_level=args.sync_level, wait=False,
-               rucio_deterministic=args.rucio_deterministic, scope=args.scope, **ep)
-        print(f"{args.action} {r['src']} -> {r['dst']}: {r['files']} files, tasks {', '.join(r['task_ids'])}")
-        if not args.no_wait:
-            api.e2e_wait(r["task_ids"], on_update=lambda t, i: print(
-                f"  {t}: {i['status']} {i.get('files_transferred')}/{i.get('files')}"))
-            print("done")
-        return EXIT_OK
+        # a tracked transfer run: `monitor`, `daemon`, `runs`, `cancel` and `--resume` work on it
+        r = api.e2e_submit(args.site, args.action, pairs, manifest=args.manifest, rucio=args.rucio,
+                           endpoint=args.endpoint, sync_level=args.sync_level,
+                           rucio_deterministic=args.rucio_deterministic, scope=args.scope, run_id=args.run_id,
+                           validate=not args.no_validate, wait=not args.no_wait, echo=print)
+        print_runs([r])
+        if r["status"] == "active":
+            print(f"next: globusiri monitor {r['run_id']}   (or keep `globusiri daemon` running)")
+        return EXIT_OK if r["status"] != "failed" else JobFailed.exit_code
     if args.action == "cleanup":
         r = api.e2e_cleanup(args.site, args.paths, manifest=args.manifest, rucio=args.rucio, force=args.force,
                             dry_run=args.dry_run, wait=False, rucio_deterministic=bool(args.scope), scope=args.scope)
@@ -496,7 +495,10 @@ def build_parser():
                                help="with --rucio-deterministic and one SRC DST: the Rucio file name "
                                     "(default: SRC's basename)")
                 t.add_argument("--sync-level", choices=["exists", "size", "mtime", "checksum"])
-                t.add_argument("--no-wait", action="store_true")
+                t.add_argument("--run-id", help="run ID of this transfer (default: generated)")
+                t.add_argument("--no-validate", action="store_true", help="skip the e2e token validation")
+                t.add_argument("--no-wait", action="store_true",
+                               help="submit and return; `globusiri monitor` (or the daemon) checks the transfer")
             t = gs.add_parser("cleanup", parents=[common],
                               help="delete stage-in files on the HPC endpoint (Globus delete task)")
             t.add_argument("site", metavar="SITE")

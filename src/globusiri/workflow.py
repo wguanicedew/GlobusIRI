@@ -1,5 +1,7 @@
 """Workflow engine: validate -> [e2e stagein] -> upload -> submit -> monitor ->
 https download of stdout/stderr -> [e2e stageout] -> [cleanup].
+A transfer run (kind "transfer", from `globusiri e2e stagein/stageout`) has only
+validate -> e2e stagein or e2e stageout.
 
 The engine never blocks. `advance()` makes one pass over a run. It goes through the steps
 in order, starts the next one, or checks a step that is already running (a Globus task, an
@@ -39,6 +41,15 @@ from .validate import FAIL, failed, validate
 log = logging.getLogger("globusiri.workflow")
 
 STEPS = ("validate", "e2e_stagein", "upload", "submit", "monitor", "https_stageout", "e2e_stageout", "cleanup")
+# A transfer run (`globusiri e2e stagein/stageout`, kind "transfer") has no IRI job: its saved
+# job holds only staging.e2e, and only these steps run. monitor/daemon/runs/cancel/--resume
+# treat it like any other run.
+TRANSFER = "transfer"
+TRANSFER_STEPS = ("validate", "e2e_stagein", "e2e_stageout")
+
+
+def steps_of(state):
+    return TRANSFER_STEPS if state.data.get("kind") == TRANSFER else STEPS
 
 # run status
 ACTIVE, FINISHED, FAILED, CANCELLED = "active", "finished", "failed", "cancelled"
@@ -201,8 +212,9 @@ def _e2e_sources(config, e2e, direction):
 
 
 def create(config, job, site, *, run_id=None, do_validate=True, stagein_manifest=None, stageout_manifest=None,
-           max_attempts=DEFAULT_MAX_ATTEMPTS):
-    """Create a run (state.json + job.yaml snapshot). Nothing is contacted. Returns RunState."""
+           max_attempts=DEFAULT_MAX_ATTEMPTS, kind=None):
+    """Create a run (state.json + job.yaml snapshot). Nothing is contacted. Returns RunState.
+    kind: None for a job run, TRANSFER for a transfer-only run (see create_transfer)."""
     _apply_manifest_overrides(job, stagein_manifest, stageout_manifest)
     job._check()
     for direction in ("stagein", "stageout"):
@@ -216,11 +228,54 @@ def create(config, job, site, *, run_id=None, do_validate=True, stagein_manifest
         log.info("run %s: created at %s (job %s)", run_id, site.name, job.source or job.name)
         state = RunState(run_dir)
         state.data.update({"run_id": run_id, "site": site.name, "status": ACTIVE, "current_step": STEPS[0],
-                           "created_at": _now(), "remote_work_dir": site.remote_run_dir(run_id),
+                           "created_at": _now(),
                            "options": {"validate": bool(do_validate), "max_attempts": int(max_attempts)}})
+        if kind:
+            state.data["kind"] = kind
+            state.data["steps"] = {s: {"status": "pending"} for s in TRANSFER_STEPS}
+        else:
+            state.data["remote_work_dir"] = site.remote_run_dir(run_id)
         job.snapshot(run_dir / "job.yaml")
         state.save()
     return state
+
+
+def create_transfer(config, site, direction, *, pairs=(), manifest=None, rucio=(), endpoint=None,
+                    sync_level=None, rucio_deterministic=False, scope=None, run_id=None, do_validate=True,
+                    max_attempts=DEFAULT_MAX_ATTEMPTS):
+    """Create a transfer-only run: one Globus E2E stagein or stageout, tracked like a job run
+    (advance/monitor/daemon/runs/cancel/--resume). Nothing is contacted. Returns RunState.
+
+    pairs: (SRC, DST), (SRC, DST, SCOPE[, NAME]) or {src, dst[, rucio_deterministic, scope, name]};
+    rucio_deterministic/scope are the defaults for pairs and manifest lines (see e2e.resolve_pairs).
+    """
+    if direction not in ("stagein", "stageout"):
+        raise ConfigError(f"direction must be stagein or stageout, not '{direction}'")
+    files = []
+    for item in pairs or []:
+        if isinstance(item, dict):
+            files.append(dict(item))
+            continue
+        item = tuple(item)
+        entry = {"src": item[0], "dst": item[1]}
+        if len(item) > 2:
+            entry.update(rucio_deterministic=True, scope=item[2])
+            if len(item) > 3 and item[3]:
+                entry["name"] = item[3]
+        files.append(entry)
+    section = {"manifest": str(config.paths.resolve(manifest)) if manifest else None, "rucio": list(rucio or []),
+               "files": files, "rucio_deterministic": bool(rucio_deterministic), "scope": scope,
+               "endpoint": endpoint, "sync_level": sync_level}
+    data = {"site": site.name, "name": f"e2e-{direction}",
+            "staging": {"e2e": {"enabled": True, direction: section},
+                        "https_stageout": {"stdout_stderr": False, "files": []}}}
+    job, site = resolve_job(config, snapshot_data=data)
+    # build the plan now (offline) so a bad entry, endpoint or manifest fails before the run exists
+    m, r, entries, det, sc = _e2e_sources(config, job.e2e, direction)
+    e2e_staging.plan(config, site, direction, manifest=m, rucio=r, pairs=entries, endpoint_label=endpoint,
+                     deterministic=det, scope=sc)
+    return create(config, job, site, run_id=run_id, do_validate=do_validate, max_attempts=max_attempts,
+                  kind=TRANSFER)
 
 
 def load(config, run_id):
@@ -304,7 +359,8 @@ def _step_validate(ctx):
     if not ctx.state.data.get("options", {}).get("validate", True):
         ctx.state.set("validate", "skipped", reason="--no-validate")
         return True
-    checks = validate(ctx.config, job=ctx.job)
+    kinds = ["e2e"] if ctx.state.data.get("kind") == TRANSFER else ("iri", "https", "e2e")
+    checks = validate(ctx.config, job=ctx.job, kinds=kinds)
     for c in checks:
         if c.status != "OK":
             ctx.echo(f"  validate {c.kind:5} {c.check:14} {c.status:7} {c.detail_with_fix}")
@@ -318,11 +374,13 @@ def _step_validate(ctx):
 def _e2e_transfer_step(ctx, step, direction):
     st = ctx.state.step(step)
     if not st.get("task_ids"):
+        spec = ctx.job.e2e.get(direction) or {}
         manifest, rucio, entries, det, scope = _e2e_sources(ctx.config, ctx.job.e2e, direction)
         p = e2e_staging.plan(ctx.config, ctx.site, direction, manifest=manifest, rucio=rucio, pairs=entries,
-                             deterministic=det, scope=scope)
+                             endpoint_label=spec.get("endpoint"), deterministic=det, scope=scope)
         suffix = "IN" if direction == "stagein" else "OUT"
-        task_ids = e2e_staging.submit(ctx.transfer, ctx.config, p, label=f"globusiri-{ctx.run_id}-{suffix}")
+        task_ids = e2e_staging.submit(ctx.transfer, ctx.config, p, label=f"globusiri-{ctx.run_id}-{suffix}",
+                                      sync_level=spec.get("sync_level"))
         ctx.state.set(step, "running", task_ids=task_ids, files=len(p.items), started_at=_now())
         ctx.echo(f"  e2e {direction}: submitted {', '.join(task_ids)} ({len(p.items)} files)")
     if not _poll_tasks(ctx, step):
@@ -405,7 +463,7 @@ def _step_e2e_stageout(ctx):
     if not (ctx.job.e2e_enabled and _has_files(spec)):
         ctx.state.set("e2e_stageout", "skipped", reason="job does not enable e2e stageout")
         return True
-    if _final(ctx) != jobs.FINISHED:
+    if ctx.state.data.get("kind") != TRANSFER and _final(ctx) != jobs.FINISHED:
         ctx.state.set("e2e_stageout", "skipped", reason=f"job ended {_final(ctx)}")
         return True
     return _e2e_transfer_step(ctx, "e2e_stageout", "stageout")
@@ -465,7 +523,7 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
         return state
     ctx = _Ctx(config, job, site, state, echo)
     max_attempts = int(state.data.get("options", {}).get("max_attempts", DEFAULT_MAX_ATTEMPTS))
-    for name in STEPS:
+    for name in steps_of(state):
         st = state.step(name)
         if st.get("status") in STEP_PASSED or st.get("status") == "failed":
             continue
@@ -506,6 +564,10 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
                     raise
             echo(f"  {name}: error (attempt {attempts}/{limit}): {exc}")
             return state
+    if state.data.get("kind") == TRANSFER:  # every step passed: the transfer succeeded
+        state.finish(FINISHED)
+        echo(f"run {state.run_id} finished")
+        return state
     final = _final(ctx)
     if final == jobs.FINISHED:
         state.finish(FINISHED)
@@ -644,6 +706,8 @@ def plugin_status(state_data):
     status = state_data.get("status")
     if status in (FINISHED, FAILED, CANCELLED):
         return status
+    if state_data.get("kind") == TRANSFER:
+        return "running"
     mon = (state_data.get("steps") or {}).get("monitor") or {}
     if mon.get("status") == "done" or mon.get("state") == jobs.RUNNING:
         return "running"

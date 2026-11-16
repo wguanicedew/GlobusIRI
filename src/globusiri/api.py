@@ -441,6 +441,34 @@ class GlobusIRI:
         return self._e2e_transfer(site, "stageout", pairs, manifest, rucio, dst_endpoint, sync_level, wait,
                                   on_update, label, rucio_deterministic, scope)
 
+    def e2e_submit(self, site, direction, pairs=(), *, manifest=None, rucio=(), endpoint=None, sync_level=None,
+                   rucio_deterministic=False, scope=None, run_id=None, validate=True, wait=False, interval=None,
+                   max_attempts=workflow.DEFAULT_MAX_ATTEMPTS, echo=None):
+        """A tracked E2E transfer (the `globusiri e2e stagein/stageout` commands): create a
+        transfer run, validate the e2e token (unless validate=False) and submit the Globus task.
+
+        wait=False returns after that first pass; monitor()/daemon() then check the run like any
+        job run, and runs()/cancel()/reopen() work on it. wait=True polls until it ends (every
+        `interval` s, default e2e.poll_interval) and raises JobFailed if it failed. Other
+        arguments as e2e_stagein. Returns the run's state dict.
+        """
+        site_obj = self.config.site(site)
+        state = workflow.create_transfer(self.config, site_obj, direction, pairs=pairs, manifest=manifest,
+                                         rucio=rucio, endpoint=endpoint, sync_level=sync_level,
+                                         rucio_deterministic=rucio_deterministic, scope=scope, run_id=run_id,
+                                         do_validate=validate, max_attempts=max_attempts)
+        echo = echo or (lambda *a: None)
+        if wait:
+            st, job_obj, site_obj = workflow.load(self.config, state.run_id)
+            workflow.run(self.config, job_obj, site_obj, resume_state=st, echo=echo,
+                         interval=interval or self.config.e2e.poll_interval)
+        else:
+            try:
+                workflow.advance(self.config, state.run_id, echo=echo)
+            except workflow.RunBusy:
+                pass  # a monitor already picked up the newly published run
+        return self.run_state(state.run_id)
+
     def e2e_cleanup(self, site, paths=(), *, manifest=None, rucio=(), force=False, dry_run=False, wait=True,
                     on_update=None, label=None, rucio_deterministic=False, scope=None):
         """Delete stage-in files on the HPC endpoint (Globus delete task).

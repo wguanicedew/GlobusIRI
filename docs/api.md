@@ -57,8 +57,9 @@ g.job_cleanup("NERSC_Perlmutter", sub["run_id"])
 | `globusiri https stagein` | `g.https_stagein(site, files, to, *, mkdir, executable)` → remote paths |
 | `globusiri https stageout` | `g.https_stageout(site, files, to, *, overwrite)` → `{remote: local}` |
 | `globusiri https stageout --job-id` | `g.https_stageout_job_logs(site, job_id, to, *, run_id, overwrite)` |
-| `globusiri e2e stagein` | `g.e2e_stagein(site, pairs=(), *, manifest, rucio, src_endpoint, sync_level, wait, on_update, label)` → `{"task_ids", "files", "src", "dst"}` |
-| `globusiri e2e stageout` | `g.e2e_stageout(site, pairs=(), *, manifest, rucio, dst_endpoint, sync_level, wait, on_update, label)` |
+| `globusiri e2e stagein`/`stageout` | `g.e2e_submit(site, direction, pairs=(), *, manifest, rucio, endpoint, sync_level, rucio_deterministic, scope, run_id, validate=True, wait=False, interval, max_attempts=5, echo)` → state dict. Creates a tracked transfer run (`kind: transfer`) and submits it; `monitor()`/`daemon()` check it, and `runs()`/`cancel()`/`reopen()` work on it. `wait=True` polls until it ends |
+| — | `g.e2e_stagein(site, pairs=(), *, manifest, rucio, src_endpoint, sync_level, wait, on_update, label, rucio_deterministic, scope)` → `{"task_ids", "files", "src", "dst"}`; an untracked transfer (no run state) |
+| — | `g.e2e_stageout(site, pairs=(), *, manifest, rucio, dst_endpoint, sync_level, wait, on_update, label, rucio_deterministic, scope)`; untracked, as above |
 | `globusiri e2e cleanup` | `g.e2e_cleanup(site, paths=(), *, manifest, rucio, force, dry_run, wait, on_update, label)` → `{"endpoint", "items", "task_ids"}` |
 | `globusiri e2e task` | `g.e2e_task(task_id, *, failures)`; `g.e2e_wait(task_ids, *, on_update)` |
 | `globusiri e2e cancel` | `g.e2e_cancel(task_id)` |

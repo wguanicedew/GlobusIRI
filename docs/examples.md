@@ -281,6 +281,19 @@ globusiri monitor                 # one pass over every active run at every site
 globusiri daemon --interval 60    # continuous passes; new submissions join automatically
 ```
 
+Standalone Globus transfers join the same monitor. Each `e2e stagein`/`stageout --no-wait`
+submits one transfer and returns. `runs` lists the transfers with the jobs, and `monitor`
+checks them:
+
+```bash
+for f in fileA fileB fileC; do
+  globusiri e2e stagein NERSC_Perlmutter --rucio user.wguan:$f --no-wait
+  globusiri e2e stagein ALCF_CRUX --rucio user.wguan:$f --no-wait
+done
+globusiri runs --status active    # six transfer runs, STEP e2e_stagein
+globusiri monitor                 # one pass: checks every Globus task
+```
+
 The daemon can already be running when jobs are submitted. It continues when no runs are
 active. Instead of a daemon, a host program or cron can invoke `monitor` periodically.
 Additional monitors are safe: a monitor skips any run another process is advancing. Only one

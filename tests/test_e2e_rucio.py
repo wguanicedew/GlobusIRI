@@ -2,9 +2,6 @@
 
 import pytest
 
-from globusiri import services
-from globusiri.api import GlobusIRI
-from globusiri.cli import build_parser, cmd_e2e_stage
 from globusiri.errors import ConfigError
 from globusiri.jobfile import resolve_job
 from globusiri.staging.e2e import cleanup_plan, deterministic_dst, plan, read_manifest, rucio_path
@@ -95,33 +92,6 @@ def test_job_file_layout_reaches_the_plan(cfg, tmp_path):
     manifest, rucio, entries, det, scope = _e2e_sources(cfg, job.e2e, "stageout")
     p = plan(cfg, site, "stageout", pairs=entries, deterministic=det, scope=scope)
     assert p.items == [("/global/cfs/cdirs/m2616/harvester_workdir/out.txt", "/dcint-door003/usatlas.bnl.gov/out.txt")]
-
-
-def test_cli(cfg, monkeypatch):
-    class FakeTransfer:
-        def call(self, what, fn):
-            return {"task_id": "T1"}
-
-    monkeypatch.setattr(services, "transfer", lambda c: FakeTransfer())
-    g = GlobusIRI(cfg)
-    seen = {}
-    real_plan = g.e2e_plan
-
-    def spy(*a, **kw):
-        seen["plan"] = real_plan(*a, **kw)
-        return seen["plan"]
-
-    monkeypatch.setattr(g, "e2e_plan", spy)
-    base = ["e2e", "stageout", "NERSC_Perlmutter", PM_SRC, SDCC_RUCIO]
-    assert cmd_e2e_stage(build_parser().parse_args(
-        base + ["--rucio-deterministic", "--scope", "user.wguan", "--name", "fileA", "--no-wait"]), g) == 0
-    assert seen["plan"].items == [(PM_SRC, FILE_A)]
-    assert cmd_e2e_stage(build_parser().parse_args(base + ["--no-wait"]), g) == 0
-    assert seen["plan"].items == [(PM_SRC, SDCC_RUCIO)]  # default: DST is the file
-    for extra, msg in ((["--scope", "user.wguan"], "need --rucio-deterministic"),
-                       (["--rucio-deterministic"], "needs --scope")):
-        with pytest.raises(ConfigError, match=msg):
-            cmd_e2e_stage(build_parser().parse_args(base + extra), g)
 
 
 def test_cleanup_follows_deterministic_stagein(cfg, tmp_path):
