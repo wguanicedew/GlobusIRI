@@ -51,6 +51,9 @@ STEP_PASSED = ("done", "skipped")
 # retried on the next pass, up to max_attempts per step
 FATAL = (ConfigError, ValidationFailed, JobFailed)
 DEFAULT_MAX_ATTEMPTS = 5
+# Steps retried without limit: the IRI job already exists, querying it is harmless, and giving
+# up would leave the job running untracked (no stage-out, no cleanup). `cancel` stops such a run.
+UNLIMITED_RETRY_STEPS = ("monitor",)
 
 
 def _now():
@@ -443,9 +446,14 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
             state.data["current_step"] = name
             state.save()
         try:
-            if not HANDLERS[name](ctx):
+            passed = HANDLERS[name](ctx)
+            # the step's check went through: earlier transient errors no longer count
+            cleared = state.data.pop("last_error", None) is not None
+            cleared = state.step(name).pop("attempts", None) is not None or cleared
+            if cleared:
+                state.save()
+            if not passed:
                 return state  # step still in progress; the next pass checks it again
-            state.data.pop("last_error", None)
         except FATAL as exc:
             if st.get("status") != "failed":
                 state.set(name, "failed", error=str(exc))
@@ -461,13 +469,15 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
             state.data["last_error"] = {"step": name, "error": f"{type(exc).__name__}: {exc}", "at": _now(),
                                         "attempt": attempts}
             state.save()
-            log.warning("run %s step %s attempt %d/%d: %s", state.run_id, name, attempts, max_attempts, exc)
-            if raise_errors or attempts >= max_attempts:
+            unlimited = name in UNLIMITED_RETRY_STEPS
+            limit = "no limit" if unlimited else max_attempts
+            log.warning("run %s step %s attempt %d/%s: %s", state.run_id, name, attempts, limit, exc)
+            if raise_errors or (not unlimited and attempts >= max_attempts):
                 state.set(name, "failed", error=str(exc))
                 state.finish(FAILED, f"{name}: {exc} (after {attempts} attempts)")
                 if raise_errors:
                     raise
-            echo(f"  {name}: error (attempt {attempts}/{max_attempts}): {exc}")
+            echo(f"  {name}: error (attempt {attempts}/{limit}): {exc}")
             return state
     final = _final(ctx)
     if final == jobs.FINISHED:

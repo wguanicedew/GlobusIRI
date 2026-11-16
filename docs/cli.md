@@ -348,7 +348,10 @@ These run the same steps as `run`, without ever waiting on a transfer or a job:
 **Errors.** A failed Globus transfer, a failed token validation or a config error fails the run
 at once (`status: failed`, with `message`). Any other error, such as a network error, an HTTP 5xx,
 or a token file briefly missing during a refresh, is recorded as `last_error`. The same step is
-retried on the next pass. After `--max-attempts` failed passes in a row, the run fails. A failed log
+retried on the next pass. After `--max-attempts` failed passes in a row, the run fails. The
+`monitor` step is the exception: once the IRI job exists, failed status queries are retried without
+limit, so a facility API outage never leaves a running job untracked; use `cancel` to stop such a
+run. A failed log
 download is recorded on the step and does not fail the run. To retry a failed run, use
 `globusiri run --resume RUN_ID [--no-wait]`.
 

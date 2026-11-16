@@ -125,10 +125,15 @@ def test_transient_error_is_retried_then_fails(env, monkeypatch):
     r = g.monitor()["A3"]  # recovered: the error is cleared and the run moves on
     assert "last_error" not in r and r["current_step"] == "monitor"
 
+    # the IRI job exists: status-query errors never end the run, however many there are
+    get_job = iri.get_job
     monkeypatch.setattr(iri, "get_job", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("iri down")))
-    g.monitor()
+    for _ in range(5):
+        r = g.monitor()["A3"]
+    assert r["status"] == "active" and r["last_error"]["attempt"] == 5 and r["current_step"] == "monitor"
+    monkeypatch.setattr(iri, "get_job", get_job)
     r = g.monitor()["A3"]
-    assert r["status"] == "failed" and "after 2 attempts" in r["message"]
+    assert "last_error" not in r and "attempts" not in r["steps"]["monitor"]
 
 
 def test_locked_run_is_skipped(env, work):
