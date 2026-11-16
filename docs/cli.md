@@ -238,17 +238,41 @@ which needs `--run-id`.
 
 ```bash
 globusiri e2e stagein  SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
+                            [--rucio-deterministic --scope SCOPE [--name NAME]]
                             [--src-endpoint LABEL] [--sync-level exists] [--no-wait]
 globusiri e2e stageout SITE (--manifest FILE | --rucio SCOPE:NAME... | SRC DST)
+                            [--rucio-deterministic --scope SCOPE [--name NAME]]
                             [--dst-endpoint LABEL] [--no-wait]
-globusiri e2e cleanup  SITE (--manifest FILE | --rucio SCOPE:NAME... | PATH...)
+globusiri e2e cleanup  SITE (--manifest FILE [--scope SCOPE] | --rucio SCOPE:NAME... | PATH...)
                             [--force] [--dry-run] [--no-wait]
 globusiri e2e task     TASK_ID [--wait] [--failures]
 globusiri e2e cancel   TASK_ID
 ```
 
-A manifest has one `SRC_PATH DST_PATH` pair per line. Lines starting with `#` are ignored.
-`--rucio SCOPE:NAME` is used only to generate the Rucio deterministic RSE path, under
+A manifest has one `SRC_PATH DST_PATH [SCOPE[:NAME]]` entry per line. Lines starting with `#` are ignored.
+
+**Destination file or Rucio deterministic path.** By default (`rucio_deterministic` false),
+`DST` is the destination file and is used as given. With `rucio_deterministic` and a `scope`,
+`DST` is a directory, such as an RSE's `.../rucio`, and the file goes to its Rucio deterministic
+path below it: `DST/<scope dirs>/<md5[0:2]>/<md5[2:4]>/NAME`. `NAME` defaults to the basename of
+`SRC`. You can switch it on for a whole transfer or for single files:
+
+- A whole transfer: `--rucio-deterministic --scope SCOPE` on the CLI. In a job file,
+  `rucio_deterministic: true` and `scope:` under `staging.e2e`, or under its `stagein`/`stageout`.
+- One file: in a job file, a `files` entry `{src, dst, rucio_deterministic, scope, name}`, where each
+  key overrides the default, so one entry can also switch it off. A manifest line or `files` string
+  `SRC DST SCOPE[:NAME]` is Rucio-deterministic for that line. `--name NAME` renames the file of a
+  single `SRC DST`.
+
+```bash
+# Perlmutter file -> SDCC as user.wguan:fileA
+#   -> /dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio/user/wguan/cb/6a/fileA
+globusiri e2e stageout NERSC_Perlmutter \
+    /global/cfs/cdirs/m2616/harvester_workdir/pilot_env/perlmutter_iri_main.sh \
+    /dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio --rucio-deterministic --scope user.wguan --name fileA
+```
+
+`--rucio SCOPE:NAME` sets both sides from the site config. It is used only to generate the Rucio deterministic RSE path, under
 `stagein.src_path` (or `stageout.dst_path`) on the storage side and `e2e.base_path` on the HPC
 side. It does not contact Rucio: it does not look up replicas, check that the file exists on the
 RSE, expand datasets, or register files after stage-out.
@@ -256,7 +280,8 @@ RSE, expand datasets, or register files after stage-out.
 `e2e cleanup` removes files that a stage-in wrote to the HPC. It submits a Globus delete task
 on the site's HPC endpoint, using the E2E token. It takes the same inputs as `stagein`:
 
-- `--manifest FILE`: the stage-in manifest. Its `DST` column is deleted.
+- `--manifest FILE`: the stage-in manifest. Its `DST` column is deleted, resolved the same way as
+  in the stage-in. If the stage-in used `--rucio-deterministic --scope SCOPE`, pass `--scope SCOPE`.
 - `--rucio SCOPE:NAME`: the Rucio deterministic path under `e2e.base_path` is deleted.
 - `PATH...`: HPC file paths (mount paths).
 

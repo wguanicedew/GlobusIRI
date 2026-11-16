@@ -154,35 +154,59 @@ def _has_files(spec):
     return bool(spec and (spec.get("manifest") or spec.get("rucio") or spec.get("files")))
 
 
-def file_pairs(spec):
-    """The job file's inline `files:` list as (SRC, DST) pairs.
-    Each entry is "SRC DST" or {src: ..., dst: ...}."""
-    out = []
+def rucio_defaults(e2e, spec):
+    """(rucio_deterministic, scope) for one stagein/stageout section: the section's own keys,
+    else staging.e2e's."""
+    e2e, spec = e2e or {}, spec or {}
+    det = spec.get("rucio_deterministic", e2e.get("rucio_deterministic", False))
+    if not isinstance(det, bool):
+        raise ConfigError("staging.e2e rucio_deterministic must be true or false")
+    return det, spec.get("scope") or e2e.get("scope")
+
+
+def file_pairs(spec, e2e=None):
+    """The job file's inline `files:` list as (SRC, final DST) pairs.
+
+    Each entry is "SRC DST", "SRC DST SCOPE[:NAME]" or {src, dst[, rucio_deterministic][, scope][, name]}.
+    rucio_deterministic and scope default to the section's, then staging.e2e's. A Rucio-
+    deterministic entry's DST is a directory and the file goes to its Rucio deterministic path;
+    NAME defaults to SRC's basename.
+    """
+    det, scope = rucio_defaults(e2e, spec)
+    return e2e_staging.resolve_pairs(file_entries(spec), deterministic=det, scope=scope)
+
+
+def file_entries(spec):
+    """The `files:` list as resolve_pairs entries (DSTs not resolved yet)."""
+    entries = []
     for item in (spec or {}).get("files") or []:
         if isinstance(item, dict):
-            src, dst = item.get("src"), item.get("dst")
-        else:
-            parts = str(item).split()
-            src, dst = (parts + [None, None])[:2] if len(parts) == 2 else (None, None)
-        if not src or not dst:
-            raise ConfigError(f"staging.e2e files entry must be 'SRC DST' or {{src, dst}}, got: {item}")
-        out.append((src, dst))
-    return out
+            entries.append(item)
+            continue
+        parts = str(item).split()
+        if len(parts) not in (2, 3):
+            raise ConfigError(f"staging.e2e files entry must be 'SRC DST [SCOPE[:NAME]]' or "
+                              f"{{src, dst[, rucio_deterministic, scope, name]}}, got: {item}")
+        entries.append(tuple(parts[:2]) + (e2e_staging.split_did(parts[2]) if len(parts) == 3 else ()))
+    return entries
 
 
-def _e2e_sources(config, spec):
+def _e2e_sources(config, e2e, direction):
+    """(manifest, rucio, entries, rucio_deterministic, scope) of one stagein/stageout section.
+    entries are unresolved: plan() (or resolve_pairs) applies the Rucio defaults once."""
+    spec = (e2e or {}).get(direction) or {}
     manifest = config.paths.resolve(spec.get("manifest")) if spec.get("manifest") else None
-    return manifest, spec.get("rucio") or [], file_pairs(spec)
+    det, scope = rucio_defaults(e2e, spec)
+    return manifest, spec.get("rucio") or [], file_entries(spec), det, scope
 
 
-# ---------------------------------------------------------------------- create
 def create(config, job, site, *, run_id=None, do_validate=True, stagein_manifest=None, stageout_manifest=None,
            max_attempts=DEFAULT_MAX_ATTEMPTS):
     """Create a run (state.json + job.yaml snapshot). Nothing is contacted. Returns RunState."""
     _apply_manifest_overrides(job, stagein_manifest, stageout_manifest)
     job._check()
     for direction in ("stagein", "stageout"):
-        file_pairs(job.e2e.get(direction))  # fail early on a bad files: entry
+        file_pairs(job.e2e.get(direction), job.e2e)  # fail early on a bad files: entry
     run_id = run_id or jobs.new_run_id()
     run_dir = config.paths.run_dir(run_id)
     with run_lock(run_dir, blocking=True), run_logging(run_log_path(config, run_id, job), run_id):
@@ -292,11 +316,11 @@ def _step_validate(ctx):
 
 
 def _e2e_transfer_step(ctx, step, direction):
-    spec = ctx.job.e2e.get(direction) or {}
     st = ctx.state.step(step)
     if not st.get("task_ids"):
-        manifest, rucio, pairs = _e2e_sources(ctx.config, spec)
-        p = e2e_staging.plan(ctx.config, ctx.site, direction, manifest=manifest, rucio=rucio, pairs=pairs)
+        manifest, rucio, entries, det, scope = _e2e_sources(ctx.config, ctx.job.e2e, direction)
+        p = e2e_staging.plan(ctx.config, ctx.site, direction, manifest=manifest, rucio=rucio, pairs=entries,
+                             deterministic=det, scope=scope)
         suffix = "IN" if direction == "stagein" else "OUT"
         task_ids = e2e_staging.submit(ctx.transfer, ctx.config, p, label=f"globusiri-{ctx.run_id}-{suffix}")
         ctx.state.set(step, "running", task_ids=task_ids, files=len(p.items), started_at=_now())
@@ -406,8 +430,10 @@ def _step_cleanup(ctx):
     st = state.step("cleanup")
     if do_e2e:
         if not st.get("e2e_task_ids"):
-            manifest, rucio, pairs = _e2e_sources(ctx.config, in_spec)
-            p = e2e_staging.cleanup_plan(ctx.site, manifest=manifest, rucio=rucio, paths=[d for _, d in pairs])
+            manifest, rucio, entries, det, scope = _e2e_sources(ctx.config, job.e2e, "stagein")
+            written = e2e_staging.resolve_pairs(entries, deterministic=det, scope=scope)
+            p = e2e_staging.cleanup_plan(ctx.site, manifest=manifest, rucio=rucio, paths=[d for _, d in written],
+                                         deterministic=det, scope=scope)
             task_ids = e2e_staging.submit_delete(ctx.transfer, ctx.config, p, label=f"globusiri-{ctx.run_id}-CLEANUP")
             state.set("cleanup", "running", e2e_task_ids=task_ids, e2e_files=len(p.items), started_at=_now())
             ctx.echo(f"  cleanup e2e stage-in files: submitted {', '.join(task_ids)}")

@@ -36,7 +36,9 @@ DEFAULT_JOB = {
     "archive_inputs": False,
     "panda_auth_origin": "",
     "staging": {
-        "e2e": {"enabled": False, "stagein": {"manifest": None, "rucio": [], "files": []},
+        # rucio_deterministic: DSTs are directories, files go to their Rucio deterministic path
+        # (needs scope); stagein/stageout and each files entry can override both
+        "e2e": {"enabled": False, "rucio_deterministic": False, "scope": None, "stagein": {"manifest": None, "rucio": [], "files": []},
                 "stageout": {"manifest": None, "rucio": [], "files": []}},
         "https_stageout": {"stdout_stderr": True, "files": []},
     },

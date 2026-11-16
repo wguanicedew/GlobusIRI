@@ -243,10 +243,17 @@ def cmd_e2e_stage(args, api):
         if args.paths:
             if len(args.paths) != 2:
                 raise ConfigError("give exactly SRC DST")
-            pairs = [tuple(args.paths)]
+            pairs = [tuple(args.paths) + ((args.scope, args.name) if args.name else ())]
+        if (args.scope or args.name) and not args.rucio_deterministic:
+            raise ConfigError("--scope/--name need --rucio-deterministic")
+        if args.rucio_deterministic and not args.scope:
+            raise ConfigError("--rucio-deterministic needs --scope SCOPE")
+        if args.name and not pairs:
+            raise ConfigError("--name needs one SRC DST")
         fn = api.e2e_stagein if args.action == "stagein" else api.e2e_stageout
         ep = {"src_endpoint" if args.action == "stagein" else "dst_endpoint": args.endpoint}
-        r = fn(args.site, pairs, manifest=args.manifest, rucio=args.rucio, sync_level=args.sync_level, wait=False, **ep)
+        r = fn(args.site, pairs, manifest=args.manifest, rucio=args.rucio, sync_level=args.sync_level, wait=False,
+               rucio_deterministic=args.rucio_deterministic, scope=args.scope, **ep)
         print(f"{args.action} {r['src']} -> {r['dst']}: {r['files']} files, tasks {', '.join(r['task_ids'])}")
         if not args.no_wait:
             api.e2e_wait(r["task_ids"], on_update=lambda t, i: print(
@@ -255,7 +262,7 @@ def cmd_e2e_stage(args, api):
         return EXIT_OK
     if args.action == "cleanup":
         r = api.e2e_cleanup(args.site, args.paths, manifest=args.manifest, rucio=args.rucio, force=args.force,
-                            dry_run=args.dry_run, wait=False)
+                            dry_run=args.dry_run, wait=False, rucio_deterministic=bool(args.scope), scope=args.scope)
         if args.dry_run:
             for item in r["items"]:
                 print(f"would delete {r['endpoint']}:{item}")
@@ -481,6 +488,13 @@ def build_parser():
                                help="repeatable; only builds the Rucio deterministic RSE path from the DID "
                                     "(no Rucio catalog lookup, replica check or registration)")
                 t.add_argument(ep_flag, dest="endpoint", metavar="LABEL", help="storage endpoint label (default from site)")
+                t.add_argument("--rucio-deterministic", action="store_true",
+                               help="DST (and each manifest DST) is a directory; files go to their Rucio "
+                                    "deterministic path below it (needs --scope)")
+                t.add_argument("--scope", metavar="SCOPE", help="Rucio scope for --rucio-deterministic")
+                t.add_argument("--name", metavar="NAME",
+                               help="with --rucio-deterministic and one SRC DST: the Rucio file name "
+                                    "(default: SRC's basename)")
                 t.add_argument("--sync-level", choices=["exists", "size", "mtime", "checksum"])
                 t.add_argument("--no-wait", action="store_true")
             t = gs.add_parser("cleanup", parents=[common],
@@ -488,6 +502,8 @@ def build_parser():
             t.add_argument("site", metavar="SITE")
             t.add_argument("paths", nargs="*", metavar="PATH", help="HPC file path (mount path)")
             t.add_argument("--manifest", help="stage-in manifest; its DST column is deleted")
+            t.add_argument("--scope", metavar="SCOPE",
+                           help="the stage-in used --rucio-deterministic --scope SCOPE with this manifest")
             t.add_argument("--rucio", action="append", metavar="SCOPE:NAME",
                            help="repeatable; deletes the Rucio deterministic path under e2e.base_path")
             t.add_argument("--force", action="store_true",

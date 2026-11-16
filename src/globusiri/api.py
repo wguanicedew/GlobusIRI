@@ -403,13 +403,22 @@ class GlobusIRI:
     def _transfer(self):
         return services.transfer(self.config)
 
-    def e2e_plan(self, site, direction, *, pairs=(), manifest=None, rucio=(), endpoint=None):
-        """Build (but do not submit) a transfer plan. Returns staging.e2e.Plan."""
-        return e2e_staging.plan(self.config, self.config.site(site), direction, manifest=manifest,
-                                rucio=rucio or [], pairs=list(pairs or []), endpoint_label=endpoint)
+    def e2e_plan(self, site, direction, *, pairs=(), manifest=None, rucio=(), endpoint=None,
+                 rucio_deterministic=False, scope=None):
+        """Build (but do not submit) a transfer plan. Returns staging.e2e.Plan.
 
-    def _e2e_transfer(self, site, direction, pairs, manifest, rucio, endpoint, sync_level, wait, on_update, label):
-        p = self.e2e_plan(site, direction, pairs=pairs, manifest=manifest, rucio=rucio, endpoint=endpoint)
+        pairs: (SRC, DST), (SRC, DST, SCOPE[, NAME]) or {src, dst[, rucio_deterministic][, scope][, name]}.
+        rucio_deterministic/scope are the defaults for pairs and manifest lines. A Rucio-
+        deterministic entry's DST is a directory: the file goes to its Rucio deterministic path
+        below it, named NAME or SRC's basename."""
+        return e2e_staging.plan(self.config, self.config.site(site), direction, manifest=manifest,
+                                rucio=rucio or [], pairs=list(pairs or []), endpoint_label=endpoint,
+                                deterministic=rucio_deterministic, scope=scope)
+
+    def _e2e_transfer(self, site, direction, pairs, manifest, rucio, endpoint, sync_level, wait, on_update, label,
+                      rucio_deterministic=False, scope=None):
+        p = self.e2e_plan(site, direction, pairs=pairs, manifest=manifest, rucio=rucio, endpoint=endpoint,
+                          rucio_deterministic=rucio_deterministic, scope=scope)
         transfer = self._transfer()
         task_ids = e2e_staging.submit(transfer, self.config, p, label=label, sync_level=sync_level)
         result = {"direction": direction, "src": p.src.label, "dst": p.dst.label, "files": len(p.items),
@@ -419,20 +428,21 @@ class GlobusIRI:
         return result
 
     def e2e_stagein(self, site, pairs=(), *, manifest=None, rucio=(), src_endpoint=None, sync_level=None,
-                    wait=True, on_update=None, label=None):
-        """Storage endpoint -> HPC. pairs: [(SRC, DST)]; rucio: ["SCOPE:NAME"] (only builds the
-        Rucio deterministic RSE path; no Rucio lookup). Returns {"task_ids", "files", ...}."""
+                    wait=True, on_update=None, label=None, rucio_deterministic=False, scope=None):
+        """Storage endpoint -> HPC. pairs, rucio_deterministic, scope: see e2e_plan; rucio:
+        ["SCOPE:NAME"] (both sides from the site's Rucio paths; only builds the deterministic RSE
+        path, no Rucio lookup). Returns {"task_ids", "files", ...}."""
         return self._e2e_transfer(site, "stagein", pairs, manifest, rucio, src_endpoint, sync_level, wait,
-                                  on_update, label)
+                                  on_update, label, rucio_deterministic, scope)
 
     def e2e_stageout(self, site, pairs=(), *, manifest=None, rucio=(), dst_endpoint=None, sync_level=None,
-                     wait=True, on_update=None, label=None):
+                     wait=True, on_update=None, label=None, rucio_deterministic=False, scope=None):
         """HPC -> storage endpoint. Same arguments as e2e_stagein."""
         return self._e2e_transfer(site, "stageout", pairs, manifest, rucio, dst_endpoint, sync_level, wait,
-                                  on_update, label)
+                                  on_update, label, rucio_deterministic, scope)
 
     def e2e_cleanup(self, site, paths=(), *, manifest=None, rucio=(), force=False, dry_run=False, wait=True,
-                    on_update=None, label=None):
+                    on_update=None, label=None, rucio_deterministic=False, scope=None):
         """Delete stage-in files on the HPC endpoint (Globus delete task).
 
         manifest: stage-in manifest (its DST column is deleted); rucio: ["SCOPE:NAME"] under
@@ -440,7 +450,8 @@ class GlobusIRI:
         (no task_ids with dry_run).
         """
         p = e2e_staging.cleanup_plan(self.config.site(site), manifest=manifest, rucio=rucio or [],
-                                     paths=list(paths or []), force=force)
+                                     paths=list(paths or []), force=force, deterministic=rucio_deterministic,
+                                     scope=scope)
         result = {"endpoint": p.endpoint.label, "items": list(p.items)}
         if dry_run:
             return result

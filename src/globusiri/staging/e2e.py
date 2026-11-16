@@ -29,7 +29,70 @@ def rucio_path(base, scope, name):
     return posixpath.join(base.rstrip("/") or "/", scope.replace(".", "/"), digest[0:2], digest[2:4], name)
 
 
-def read_manifest(path):
+def deterministic_dst(src, dst, *, deterministic=False, scope=None, name=None):
+    """The destination file of one transfer.
+
+    deterministic false: DST is the destination file, used as given. deterministic true: DST is
+    a directory (a Rucio RSE base such as .../atlasdatadisk/rucio) and the file goes to its Rucio
+    deterministic path rucio_path(DST, scope, name), name defaulting to SRC's basename.
+    """
+    if not deterministic:
+        if name:
+            raise ConfigError(f"name '{name}' for {src} needs rucio_deterministic")
+        return dst
+    if not scope:
+        raise ConfigError(f"rucio_deterministic for {src} needs a scope")
+    name = name or posixpath.basename(str(src).rstrip("/"))
+    for what, value in (("scope", scope), ("name", name)):
+        if "/" in value or ":" in value:
+            raise ConfigError(f"invalid Rucio {what} '{value}' for {src}")
+    return rucio_path(dst, scope, name)
+
+
+def split_did(text):
+    """'SCOPE' or 'SCOPE:NAME' -> (scope, name or None)."""
+    scope, _, name = str(text).partition(":")
+    return scope, (name or None)
+
+
+def resolve_pairs(pairs, *, deterministic=False, scope=None):
+    """Transfer entries -> [(SRC, final DST)].
+
+    Entries:
+      (SRC, DST)                  uses the defaults `deterministic` and `scope`
+      (SRC, DST, SCOPE[, NAME])   Rucio deterministic, with this scope (and name)
+      {src, dst[, rucio_deterministic][, scope][, name]}   each key overrides the default
+    A Rucio-deterministic entry's DST is a directory; see deterministic_dst.
+    """
+    out = []
+    for item in pairs or []:
+        if isinstance(item, dict):
+            src, dst, name = item.get("src"), item.get("dst"), item.get("name")
+            det = item.get("rucio_deterministic", deterministic)
+            if not isinstance(det, bool):
+                raise ConfigError(f"rucio_deterministic must be true or false, got: {item}")
+            s = item.get("scope") or scope
+        else:
+            item = tuple(item)
+            if len(item) not in (2, 3, 4):
+                raise ConfigError(f"transfer entry must be (SRC, DST[, SCOPE[, NAME]]), got: {item}")
+            src, dst = item[:2]
+            if len(item) > 2:
+                det, s, name = True, item[2], (item[3] if len(item) > 3 else None)
+            else:
+                det, s, name = deterministic, scope, None
+        if not src or not dst:
+            raise ConfigError(f"transfer entry needs src and dst, got: {item}")
+        out.append((src, deterministic_dst(src, dst, deterministic=det, scope=s, name=name)))
+    return out
+
+
+def read_manifest(path, *, deterministic=False, scope=None):
+    """Lines 'SRC DST' or 'SRC DST SCOPE[:NAME]' -> [(SRC, final DST)].
+
+    A third column puts that line's file at its Rucio deterministic path below DST; other
+    lines follow the defaults `deterministic` and `scope` (see resolve_pairs).
+    """
     items = []
     with open(path, encoding="utf-8") as fh:
         for n, line in enumerate(fh, 1):
@@ -37,9 +100,10 @@ def read_manifest(path):
             if not line or line.startswith("#"):
                 continue
             parts = line.split()
-            if len(parts) != 2:
-                raise ConfigError(f"{path}:{n}: expected 'SRC DST', got: {line}")
-            items.append((parts[0], parts[1]))
+            if len(parts) not in (2, 3):
+                raise ConfigError(f"{path}:{n}: expected 'SRC DST [SCOPE[:NAME]]', got: {line}")
+            entry = tuple(parts[:2]) + (split_did(parts[2]) if len(parts) == 3 else ())
+            items += resolve_pairs([entry], deterministic=deterministic, scope=scope)
     return items
 
 
@@ -51,8 +115,13 @@ class Plan:
     items: list = field(default_factory=list)  # (src_globus_path, dst_globus_path)
 
 
-def plan(config, site, direction, *, manifest=None, rucio=(), pairs=(), endpoint_label=None):
-    """Build a transfer plan. HPC-side paths are given as HPC mount paths."""
+def plan(config, site, direction, *, manifest=None, rucio=(), pairs=(), endpoint_label=None,
+         deterministic=False, scope=None):
+    """Build a transfer plan. HPC-side paths are given as HPC mount paths.
+
+    deterministic/scope: defaults for manifest and pair entries. A Rucio-deterministic entry's
+    DST is a directory and the file goes to its Rucio deterministic path (see resolve_pairs).
+    """
     if direction not in ("stagein", "stageout"):
         raise ValueError(direction)
     hpc = site.e2e_endpoint()
@@ -69,8 +138,8 @@ def plan(config, site, direction, *, manifest=None, rucio=(), pairs=(), endpoint
 
     raw = []
     if manifest:
-        raw += read_manifest(manifest)
-    raw += list(pairs)
+        raw += read_manifest(manifest, deterministic=deterministic, scope=scope)
+    raw += resolve_pairs(pairs, deterministic=deterministic, scope=scope)
     for did in rucio or []:
         if ":" not in did:
             raise ConfigError(f"rucio DID must be SCOPE:NAME, got '{did}'")
@@ -88,12 +157,12 @@ def plan(config, site, direction, *, manifest=None, rucio=(), pairs=(), endpoint
     return p
 
 
-def stagein_hpc_paths(site, *, manifest=None, rucio=(), paths=()):
-    """HPC-side (mount) paths that a stage-in wrote: manifest DST column, Rucio paths
-    under e2e.base_path, and any explicit paths."""
+def stagein_hpc_paths(site, *, manifest=None, rucio=(), paths=(), deterministic=False, scope=None):
+    """HPC-side (mount) paths that a stage-in wrote: manifest DST column (resolved like the
+    stage-in, see read_manifest), Rucio paths under e2e.base_path, and any explicit paths."""
     out = []
     if manifest:
-        out += [dst for _, dst in read_manifest(manifest)]
+        out += [dst for _, dst in read_manifest(manifest, deterministic=deterministic, scope=scope)]
     for did in rucio or []:
         if ":" not in did:
             raise ConfigError(f"rucio DID must be SCOPE:NAME, got '{did}'")
@@ -111,7 +180,7 @@ class DeletePlan:
     items: list = field(default_factory=list)  # globus paths
 
 
-def cleanup_plan(site, *, manifest=None, rucio=(), paths=(), force=False):
+def cleanup_plan(site, *, manifest=None, rucio=(), paths=(), force=False, deterministic=False, scope=None):
     """Plan a Globus delete of stage-in files on the HPC endpoint.
 
     Paths must be below the site's remote.work_dir, remote.log_dir or e2e.base_path
@@ -119,7 +188,8 @@ def cleanup_plan(site, *, manifest=None, rucio=(), paths=(), force=False):
     """
     from ..cleanup import check_under, site_roots
 
-    hpc_paths = stagein_hpc_paths(site, manifest=manifest, rucio=rucio, paths=paths)
+    hpc_paths = stagein_hpc_paths(site, manifest=manifest, rucio=rucio, paths=paths, deterministic=deterministic,
+                                  scope=scope)
     if not hpc_paths:
         raise ConfigError("nothing to clean up: give a manifest, --rucio, or PATH")
     roots = site_roots(site)

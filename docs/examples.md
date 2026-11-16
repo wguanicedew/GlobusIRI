@@ -229,6 +229,42 @@ Each manifest line is `SOURCE_PATH DESTINATION_PATH`. Manifest paths are local a
 to WORK_DIR; paths inside the manifests describe files on the Globus endpoints. Keep separate
 manifests per job when paths differ.
 
+## Rucio deterministic paths: Perlmutter → SDCC → Perlmutter and Crux
+
+[`tests/live/e2e_rucio_chain.sh`](../tests/live/e2e_rucio_chain.sh) is a live E2E test. It uses
+real Globus transfers with your E2E token and is not run by `pytest`:
+
+```bash
+# 1+2. Perlmutter file -> SDCC as user.wguan:fileA, at its Rucio deterministic path
+globusiri e2e stageout NERSC_Perlmutter \
+    /global/cfs/cdirs/m2616/harvester_workdir/pilot_env/perlmutter_iri_main.sh \
+    /dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio --rucio-deterministic --scope user.wguan --name fileA
+
+# 3. fileA from SDCC -> the Perlmutter and Crux rucio dirs (same deterministic path)
+globusiri e2e stagein NERSC_Perlmutter --rucio user.wguan:fileA
+globusiri e2e stagein ALCF_CRUX --rucio user.wguan:fileA
+```
+
+| Copy | Path |
+|---|---|
+| SDCC | `/dcint-door003/usatlas.bnl.gov/atlasdatadisk/rucio/user/wguan/cb/6a/fileA` |
+| Perlmutter | `/global/cfs/cdirs/m2616/harvester_workdir/rucio/user/wguan/cb/6a/fileA` |
+| Crux | `/ATLAS_workflow_ALCF/usatlas/IRI_workdir/rucio/user/wguan/cb/6a/fileA` (Globus path of `/lus/eagle/projects/...`) |
+
+In step 2, `--rucio-deterministic --scope user.wguan` turns the destination `.../rucio` into a
+directory, and the file goes to its Rucio deterministic path below it. `--name` renames it to `fileA`; without `--name`, it keeps the
+source file name. In step 3, `--rucio SCOPE:NAME` builds both sides from the site config:
+`e2e.stagein.src_path` at SDCC and `e2e.base_path` on the HPC. The files are only placed by path;
+nothing is registered in Rucio. Run `tests/live/e2e_rucio_chain.sh [SCOPE] [NAME]` to do all three
+steps, and remove the HPC copies afterwards with `globusiri e2e cleanup SITE --rucio
+user.wguan:fileA`.
+
+In a job file, put `rucio_deterministic: true` and `scope:` under `staging.e2e` for every
+transfer, or under `stagein`/`stageout`. A `files` entry can override them, and set `name`:
+`{src, dst, rucio_deterministic, scope, name}`. It can also use the string form `"SRC DST
+SCOPE[:NAME]"`. See the comments in
+[`perlmutter_transfer_job.yaml`](../src/globusiri/data/jobs/perlmutter_transfer_job.yaml).
+
 ## Many submissions, one monitor
 
 Every terminal, cron job, and service must use the same `GLOBUSIRI_WORK_DIR`. Omit run IDs

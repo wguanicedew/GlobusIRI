@@ -300,3 +300,15 @@ def test_failed_run_resumed_with_monitor_or_submit(env, capsys):
         cmd_submit(build_parser().parse_args(["submit", "--resume", "R1", "--job", "x.yaml"]), g)
     with pytest.raises(ConfigError, match="needs --job"):
         cmd_submit(build_parser().parse_args(["submit"]), g)
+
+
+def test_rucio_deterministic_job_reaches_globus_once(env):
+    """staging.e2e scope/rucio_deterministic: the workflow resolves each DST exactly once."""
+    g, iri, gl = env
+    g.submit("perlmutter_example_job.yaml", run_id="RD1", validate=False, overrides={"staging": {"e2e": {
+        "enabled": True, "scope": "user.wguan", "rucio_deterministic": True,
+        "stagein": {"files": [{"src": "/pnfs/usatlas.bnl.gov/atlasdatadisk/x/fileA",
+                               "dst": "/global/cfs/cdirs/m2616/harvester_workdir/rucio"}]}}}})
+    (src, dst), = gl.submitted[0][2]
+    assert src == "/dcint-door003/usatlas.bnl.gov/atlasdatadisk/x/fileA"
+    assert dst == "/global/cfs/cdirs/m2616/harvester_workdir/rucio/user/wguan/cb/6a/fileA"

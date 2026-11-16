@@ -22,6 +22,18 @@ inputs: {}
 staging:
   e2e:
     enabled: true
+    # dst is the destination file, used as given. With rucio_deterministic: true (default
+    # false), dst is a directory (e.g. an RSE's .../rucio) and the file goes to
+    # <dst>/<scope dirs>/<md5[0:2]>/<md5[2:4]>/<name>, name defaulting to src's basename.
+    # Set both here for every transfer, or per stagein/stageout section, or per file:
+    #   rucio_deterministic: true
+    #   scope: user.wguan
+    #   stagein:
+    #     files:
+    #       - {src: /pnfs/.../x.root, dst: /global/cfs/cdirs/m2616/harvester_workdir/rucio}
+    #       - {src: /pnfs/.../y.root, dst: /global/cfs/cdirs/m2616/harvester_workdir/rucio, scope: mc23, name: y2.root}
+    #       - {src: /pnfs/.../in.txt, dst: /global/cfs/cdirs/m2616/harvester_workdir/run1/in.txt, rucio_deterministic: false}
+    #       - "/pnfs/.../w.root /global/cfs/cdirs/m2616/harvester_workdir/rucio data18:w2.root"  # SCOPE[:NAME] column
     stagein:
       files:
         - src: /pnfs/usatlas.bnl.gov/atlasdatadisk/globusiri-examples/input.txt
