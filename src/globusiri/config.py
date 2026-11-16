@@ -171,7 +171,7 @@ class Site:
         self.work_dir_resource_id = remote.get("work_dir_resource_id") or self.resource_id
         self.log_dir = remote.get("log_dir") or self.work_dir
         self.log_dir_resource_id = remote.get("log_dir_resource_id") or self.work_dir_resource_id
-        self.upload_method = remote.get("upload_method", "iri")
+        self.upload_method = remote.get("upload_method") or "globus_https"
         if self.upload_method not in UPLOAD_METHODS:
             raise ConfigError(f"sites.{name}.remote.upload_method must be one of {UPLOAD_METHODS}")
 
@@ -182,6 +182,9 @@ class Site:
         self.job_defaults = raw.get("job_defaults") or {}
 
         https = raw.get("https") or {}
+        if self.upload_method == "globus_https" and not https:
+            raise ConfigError(f"sites.{name}.remote.upload_method is globus_https (the default) but sites.{name}.https "
+                              "is not configured; add an https section or set upload_method: iri")
         self.https = https
         self.https_collection_query = https.get("collection_query")
         self.https_collection_pick = int(https.get("collection_pick", 0) or 0)

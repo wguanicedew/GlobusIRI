@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -47,7 +48,7 @@ def test_required_kinds(cfg):
     job, nersc = resolve_job(cfg, "perlmutter_example_job.yaml")
     assert set(job.required_kinds(nersc)) == {"iri", "https"}  # https: stdout/stderr download
     job, _ = resolve_job(cfg, "perlmutter_example_job.yaml", overrides=["staging.https_stageout.stdout_stderr=false"])
-    assert set(job.required_kinds(nersc)) == {"iri"}  # NERSC uploads via iri
+    assert set(job.required_kinds(nersc)) == {"iri", "https"}  # NERSC uploads via globus_https
     job, crux = resolve_job(cfg, "crux_example_job.yaml", overrides=["staging.https_stageout.stdout_stderr=false"])
     assert set(job.required_kinds(crux)) == {"iri", "https"}  # Crux uploads via globus_https
     job, _ = resolve_job(cfg, "crux_example_job.yaml", overrides=["staging.e2e.enabled=true"])
@@ -88,6 +89,83 @@ def test_template_rendering_keeps_bash_vars(cfg, tmp_path, work):
     assert 'if [ -n "" ] && [ -f "" ]; then\n    export X509' in text  # missing input -> ""
     assert set(local) == {"pandaTokenFilename"}
 
+
+def test_inputs_packed_into_one_archive(cfg, tmp_path, work):
+    import tarfile
+
+    (work.inputs_dir / "panda_token").write_text("t")
+    (work.inputs_dir / "panda_token_key").write_text("k")
+    job, site = resolve_job(cfg, "crux_example_job.yaml", overrides=["inputs.x509UserProxy=null"])
+    sub, _ = jobs.prepare(cfg, job, site, "r4", tmp_path)
+    assert sub.archive == str(tmp_path / jobs.INPUT_ARCHIVE)
+    assert sorted(sub.archived) == ["pandaTokenFilename", "pandaTokenKeyPath"]
+    with tarfile.open(sub.archive) as tar:
+        assert sorted(tar.getnames()) == ["pandaTokenFilename", "pandaTokenKeyPath"]
+        assert tar.extractfile("pandaTokenFilename").read() == b"t"
+    text = (tmp_path / "executable_batch").read_text()
+    # the stage-in block sits after the #PBS header and before the template's first command
+    assert text.index("#PBS -e") < text.index("globusiri stage-in") < text.index("export TZ=UTC0")
+    assert text.index("globusiri stage-in") < text.index('if [ -n "pandaTokenFilename" ]')
+
+
+def test_no_inputs_no_archive(cfg, tmp_path):
+    job, site = resolve_job(cfg, "perlmutter_hello_job.yaml")
+    sub, _ = jobs.prepare(cfg, job, site, "r5", tmp_path)
+    assert sub.archive is None and not (tmp_path / jobs.INPUT_ARCHIVE).exists()
+    assert "globusiri stage-in" not in (tmp_path / "executable_batch").read_text()
+
+
+@pytest.mark.parametrize("name", ["/abs", "../x", "a//b", "executable_batch", "globusiri_inputs.tar.gz"])
+def test_bad_input_names_rejected(cfg, tmp_path, name):
+    job, site = resolve_job(cfg, "perlmutter_hello_job.yaml", overrides=[f"inputs={{'{name}': x}}"])
+    with pytest.raises(ConfigError, match="not a valid remote file name"):
+        jobs.prepare(cfg, job, site, "r6", tmp_path)
+
+
+def test_stagein_rank0_extracts_others_wait(cfg, tmp_path, work):
+    import os
+    import time
+
+    (work.inputs_dir / "words.txt").write_text("one two three\n")
+    job, site = resolve_job(cfg, "perlmutter_wordcount_job.yaml")
+    local_dir = tmp_path / "local"
+    sub, _ = jobs.prepare(cfg, job, site, "r7", local_dir)
+    remote = tmp_path / "remote"  # stands in for the shared remote run dir
+    remote.mkdir()
+    (remote / jobs.INPUT_ARCHIVE).write_bytes(Path(sub.archive).read_bytes())
+    script = (local_dir / "executable_batch").read_text().replace(sub.remote_dir, str(remote))
+    (remote / "job.sh").write_text(script)
+
+    def start(rank):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "PMI", "PALS_", "OMPI_"))}
+        env["PMI_RANK"] = str(rank)
+        return subprocess.Popen(["/bin/sh", str(remote / "job.sh")], env=env, cwd=tmp_path,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    waiters = [start(1), start(2)]
+    time.sleep(0.5)
+    assert all(w.poll() is None for w in waiters)  # blocked until rank 0 has extracted
+    assert not (remote / "words.txt").exists()
+    rank0 = start(0)
+    for p in [rank0, *waiters]:
+        out, err = p.communicate(timeout=30)
+        assert p.returncode == 0, out + err
+    assert (remote / "wordcount.txt").read_text().strip() == "3"
+    assert (remote / jobs.STAGEIN_DONE).exists()
+
+
+def test_stagein_other_ranks_fail_fast_when_rank0_fails(cfg, tmp_path):
+    work_dir = tmp_path / "remote"
+    work_dir.mkdir()
+    (work_dir / jobs.INPUT_ARCHIVE).write_text("not a tarball")
+    script = work_dir / "job.sh"
+    script.write_text(jobs.stagein_block(str(work_dir)) + "echo ran\n")
+    env = {"PATH": "/usr/bin:/bin", "PMI_RANK": "0"}
+    r0 = subprocess.run(["/bin/sh", str(script)], env=env, capture_output=True, text=True)
+    assert r0.returncode != 0 and (work_dir / jobs.STAGEIN_FAILED).exists()
+    r1 = subprocess.run(["/bin/sh", str(script)], env={**env, "PMI_RANK": "1"}, capture_output=True, text=True,
+                        timeout=10)
+    assert r1.returncode != 0 and "rank 0 failed" in r1.stderr and "ran" not in r1.stdout
 
 @pytest.mark.parametrize("job_name,output,expected", [
     ("perlmutter_hello_job.yaml", "result.txt", "Job completed"),

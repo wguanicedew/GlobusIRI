@@ -94,7 +94,7 @@ sites:
       work_dir_resource_id: null        # null -> iri.resource_id
       log_dir: /global/cfs/cdirs/m2616/www/PanDA_logs/IRI
       log_dir_resource_id: null         # null -> work_dir_resource_id
-      upload_method: iri                # iri | globus_https
+      upload_method: globus_https                # iri | globus_https
 
     # Facility API capabilities: fields this IRI backend rejects in job_spec.resources.
     unsupported_resource_fields: []

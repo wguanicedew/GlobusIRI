@@ -59,12 +59,13 @@ import time
 from pathlib import Path
 from globusiri import GlobusIRI, services
 from globusiri.runindex import RunIndex
-from tests.test_validate_workflow import FakeIri
+from tests.test_validate_workflow import FakeHttps, FakeIri
 
 root, role = Path(sys.argv[1]), sys.argv[2]
 g = GlobusIRI(work_dir=root)
 iri = FakeIri(["completed"])
 services.iri_client = lambda *a, **kw: iri
+services.https_client = lambda *a, **kw: FakeHttps(200)
 original_launch = iri.launch_job
 def launch(*a, **kw):
     with open(root / "launches.txt", "a") as f:

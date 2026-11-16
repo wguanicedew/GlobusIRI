@@ -115,7 +115,7 @@ token_files:
 | `work_dir_resource_id` | Filesystem resource for `work_dir`. Defaults to `iri.resource_id` | `remote_work_dir_resource_id` |
 | `log_dir` | Parent of the per-run log directories | `remote_log_dir` |
 | `log_dir_resource_id` | Defaults to `work_dir_resource_id` | `remote_log_dir_resource_id` |
-| `upload_method` | `iri` \| `globus_https`. Controls how `job submit` uploads its inputs | `upload_method` |
+| `upload_method` | `globus_https` (default) \| `iri`. Controls how `job submit` uploads the job script and input archive. `globus_https` needs the site's `https` section | `upload_method` |
 
 ### `path_map`
 
@@ -214,7 +214,7 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 | `resources.exclusive_node_use`, `reservation_id` | Pass-through settings | same |
 | `resources.custom_attributes` | Merged into `job_spec.attributes.custom_attributes` | same |
 | `resources.signal`, `no_requeue`, `licenses`, `export`, `image`, `volume`, `pre_launch`, `post_launch` | Optional pass-through settings | same |
-| `inputs.<remote_name>` | Local file uploaded as `<remote.work_dir>/<run_id>/<remote_name>`. Relative paths are resolved against WORK_DIR, and `${X509_USER_PROXY}` is allowed. Missing files are skipped | `pandaTokenFilename`, `pandaTokenKeyPath`, `x509UserProxy` |
+| `inputs.<remote_name>` | Local file packed into the input archive and extracted as `<remote.work_dir>/<run_id>/<remote_name>` (see [Input archive](#input-archive)). Relative paths are resolved against WORK_DIR, and `${X509_USER_PROXY}` is allowed. Missing files are skipped | `pandaTokenFilename`, `pandaTokenKeyPath`, `x509UserProxy` |
 | `panda_auth_origin` | `{tokenOrigin}` placeholder | `pandaAuthOrigin` |
 | `staging.e2e.enabled` | Whether this job moves data with Globus E2E Transfer. If `false` (the default), the E2E steps are skipped and the E2E token is **not required or validated** for this job | preparator / stager configured or not |
 | `staging.e2e.stagein.manifest`, `.rucio`, `.files` | Transfer into the HPC before submission (e.g. input ROOT files). `files` is an inline list of `"SRC DST"` strings or `{src, dst}` maps; HPC-side paths are mount paths. The three sources are combined. Used only when `enabled` is true | preparator |
@@ -241,6 +241,31 @@ configuration error (exit 2), so that data is never silently left untransferred.
 `run` cleans up only after the job finished successfully and the HTTPS download and E2E
 stage-out did not fail. A failed or cancelled run keeps its files so you can debug it. You can
 remove them later with `globusiri job cleanup` and `globusiri e2e cleanup`.
+
+
+### Input archive
+
+Every submission uploads at most two files to `<remote.work_dir>/<run_id>/`:
+
+1. `executable_batch`: the rendered `template_file`, made executable (chmod 0755).
+2. `globusiri_inputs.tar.gz`: every file from `inputs`, stored under its `<remote_name>`. This file is
+   only created if at least one input exists.
+
+If there is an archive, GlobusIRI inserts a generated stage-in block into `executable_batch`. It goes
+right after the template's leading `#!`, `#SBATCH`, `#PBS` and comment lines, before the first command:
+
+- The block works out the rank from `SLURM_PROCID`, `PMIX_RANK`, `PMI_RANK`, `PALS_RANKID` or
+  `OMPI_COMM_WORLD_RANK`. If none of these is set, the rank is 0. This means the block works both
+  when the scheduler runs the script once (`launcher: null` or `single`) and when it runs the script
+  once per rank (`srun`, `mpirun`, ...).
+- Rank 0 runs `cd` into the run dir, extracts the archive, and then creates `.globusiri_inputs.done`.
+  If extraction fails, it creates `.globusiri_inputs.failed` and exits.
+- The other ranks wait until `.globusiri_inputs.done` appears and then continue. They exit
+  immediately if `.globusiri_inputs.failed` appears. They also exit if they have waited
+  `$GLOBUSIRI_STAGEIN_TIMEOUT` seconds (default 1800).
+
+The rest of the template therefore sees the inputs as plain files in the run dir. Placeholders such as
+`{pandaTokenFilename}` still resolve to the remote name.
 
 ## Token file formats
 

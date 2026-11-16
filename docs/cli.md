@@ -168,7 +168,7 @@ The job file supplies the template, resources, and inputs (see
 1. Merges the site's `job_defaults`, the job file, and any `--set` values, then saves the result to `runs/<run_id>/job.yaml`.
 2. Renders the template with Harvester placeholder names.
 3. Runs IRI `mkdir -p` on `<work_dir>/<run>` and `<log_dir>/<run>`.
-4. Uploads `executable_batch` plus the job's `inputs` using `remote.upload_method`.
+4. Packs the job's `inputs` into `globusiri_inputs.tar.gz` and uploads exactly two files, `executable_batch` and that archive, using `remote.upload_method`. Rank 0 of the job extracts the archive; the other ranks wait for it (see [configuration](configuration.md#input-archive)).
 5. Runs `chmod 0755` on `executable_batch`.
 6. Submits the job and prints the job ID.
 
@@ -324,7 +324,7 @@ These run the same steps as `run`, without ever waiting on a transfer or a job:
 |---|---|---|---|
 | validate | always (unless `--no-validate`) | — | the tokens the job needs pass |
 | e2e_stagein | `staging.e2e.enabled` and stage-in files | Globus task status | every task `SUCCEEDED` |
-| upload | after stage-in | — | scripts and inputs uploaded, `executable_batch` is 0755 |
+| upload | after stage-in | — | `executable_batch` and the input archive uploaded, `executable_batch` is 0755 |
 | submit | after upload | — | IRI returned a job ID |
 | monitor | after submit | IRI job state | `finished`, `failed` or `cancelled` |
 | https_stageout | job ended | — | stdout/stderr (and `files`) downloaded |

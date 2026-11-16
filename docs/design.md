@@ -642,7 +642,7 @@ e2e:
 - `stageout --skip-existing` (the default for log downloads) skips files that already exist
   locally, as the monitor does today.
 - A per-site `upload_method: iri | globus_https` keeps IRI's own upload endpoint available as
-  a fallback (NERSC currently uses `iri`).
+  a fallback. The default is `globus_https`.
 
 ---
 

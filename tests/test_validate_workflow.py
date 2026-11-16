@@ -142,7 +142,8 @@ def test_run_end_to_end_without_e2e(cfg, monkeypatch, work):
                      "monitor": "done", "https_stageout": "done", "e2e_stageout": "skipped",
                      "cleanup": "skipped"}
     remote_dir = "/lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs/R1"
-    assert [p[1] for p in https.puts] == [f"{remote_dir}/executable_batch", f"{remote_dir}/pandaTokenFilename"]
+    # only two uploads: the job script and one archive holding every input
+    assert [p[1] for p in https.puts] == [f"{remote_dir}/executable_batch", f"{remote_dir}/globusiri_inputs.tar.gz"]
     assert ("chmod", f"{remote_dir}/executable_batch", "0755") in iri.calls
     assert ("upload",) not in [c[:1] for c in iri.calls]  # nothing uploaded via IRI on Crux
     assert https.gets == ["/o/out.txt", "/o/err.txt"]

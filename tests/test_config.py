@@ -76,3 +76,18 @@ def test_unknown_endpoint_is_config_error(work):
 def test_unknown_site(cfg):
     with pytest.raises(ConfigError):
         cfg.site("NOPE")
+
+
+def test_upload_method_defaults_to_globus_https(work):
+    import copy
+
+    import yaml
+
+    raw = yaml.safe_load(work.default_config.read_text())
+    for site in raw["sites"].values():
+        site["remote"].pop("upload_method", None)
+    cfg = Config(copy.deepcopy(raw), paths=work)
+    assert {s.upload_method for s in cfg.sites.values()} == {"globus_https"}
+    del raw["sites"]["NERSC_Perlmutter"]["https"]
+    with pytest.raises(ConfigError, match="upload_method is globus_https"):
+        Config(raw, paths=work)

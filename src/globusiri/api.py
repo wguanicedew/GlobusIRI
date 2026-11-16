@@ -298,10 +298,10 @@ class GlobusIRI:
         with run_logging(run_log_path(cfg, run_id, job_obj), run_id):
             state = workflow.RunState(run_dir)
             state.data.update({"run_id": run_id, "site": site_obj.name, "created_at": workflow._now()})
-            sub, local_inputs = jobs.prepare(cfg, job_obj, site_obj, run_id, run_dir)
+            sub, _ = jobs.prepare(cfg, job_obj, site_obj, run_id, run_dir)
             iri = services.iri_client(cfg, site_obj)
             https = services.https_client(cfg, site_obj) if site_obj.upload_method == "globus_https" else None
-            jobs.upload_inputs(cfg, site_obj, sub, local_inputs, iri, https)
+            jobs.upload_inputs(cfg, site_obj, sub, iri, https)
             state.set("upload", "done", submission=sub.to_dict(), method=site_obj.upload_method)
             job_id = jobs.launch(site_obj, sub, iri)
             state.set("submit", "done", job_id=job_id)

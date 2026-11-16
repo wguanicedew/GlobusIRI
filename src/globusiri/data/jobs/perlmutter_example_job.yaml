@@ -27,8 +27,9 @@ resources:
   reservation_id: null
   custom_attributes: {}         # merged over site job_defaults.custom_attributes
 
-# Local files uploaded into <remote.work_dir>/<run_id>/ as <remote_name>.
-# executable_batch (the rendered template) is always uploaded and chmod 0755.
+# Local files packed into globusiri_inputs.tar.gz; rank 0 of the job extracts it into
+# <remote.work_dir>/<run_id>/ (members named <remote_name>) while the other ranks wait.
+# Only executable_batch (the rendered template, chmod 0755) and the archive are uploaded.
 inputs:
   pandaTokenFilename: inputs/panda_token
   pandaTokenKeyPath: inputs/panda_token_key

@@ -312,10 +312,10 @@ def _step_e2e_stagein(ctx):
 
 
 def _step_upload(ctx):
-    sub, local_inputs = jobs.prepare(ctx.config, ctx.job, ctx.site, ctx.run_id, ctx.state.run_dir)
+    sub, _ = jobs.prepare(ctx.config, ctx.job, ctx.site, ctx.run_id, ctx.state.run_dir)
     for s in sub.skipped_inputs:
         ctx.echo(f"  input skipped (not found): {s}")
-    jobs.upload_inputs(ctx.config, ctx.site, sub, local_inputs, ctx.iri, ctx.https)
+    jobs.upload_inputs(ctx.config, ctx.site, sub, ctx.iri, ctx.https)
     ctx.state.set("upload", "done", submission=sub.to_dict(), method=ctx.site.upload_method)
     ctx.echo(f"  uploaded {', '.join(sub.uploaded)} to {sub.remote_dir} via {ctx.site.upload_method}")
     return True
