@@ -346,3 +346,78 @@ def test_e2e_cleanup_plan(cfg, tmp_path):
     assert cleanup_plan(site, paths=["/lus/eagle/other/f"], force=True).items == ["/lus/eagle/other/f"]
     with pytest.raises(ConfigError):
         cleanup_plan(site)
+
+
+# ---------------------------------------------------------------------- script_file
+def test_script_file_used_verbatim(cfg, tmp_path, work, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    job, site = resolve_job(cfg, "perlmutter_script_job.yaml")
+    # found next to the job file, stored absolute so a resumed run finds it from the snapshot
+    assert job.script_file == str((work.jobs_dir / "perlmutter_script_job.sh").resolve())
+    assert job.template_file is None
+    sub, _ = jobs.prepare(cfg, job, site, "s1", tmp_path / "run")
+    assert (tmp_path / "run" / "executable_batch").read_text() == Path(job.script_file).read_text()
+    assert sub.job_spec["resources"]["process_count"] == 4
+    resumed, _ = resolve_job(cfg, snapshot_data=job.data)
+    assert resumed.script_file == job.script_file
+
+
+def test_script_file_no_rendering_and_stagein(cfg, tmp_path, work, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mine.sh").write_text("#!/bin/bash\n#SBATCH -q debug\necho {work_dir} ${HOME}\n")
+    (work.inputs_dir / "words.txt").write_text("a b\n")
+    job, site = resolve_job(cfg, "perlmutter_hello_job.yaml",
+                            overrides=["script_file=mine.sh", "inputs={words.txt: inputs/words.txt}"])
+    sub, _ = jobs.prepare(cfg, job, site, "s2", tmp_path / "run")
+    text = (tmp_path / "run" / "executable_batch").read_text()
+    assert "echo {work_dir} ${HOME}" in text  # not rendered
+    assert text.index("#SBATCH -q debug") < text.index("GLOBUSIRI_ARCHIVE=") < text.index("echo {work_dir}")
+    assert sub.archived == ["words.txt"]
+
+
+def test_script_file_that_extracts_itself_gets_no_block(cfg, tmp_path, work, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "mine.sh").write_text("#!/bin/bash\ntar -xzf globusiri_inputs.tar.gz\n")
+    (work.inputs_dir / "words.txt").write_text("a b\n")
+    job, site = resolve_job(cfg, "perlmutter_hello_job.yaml",
+                            overrides=["script_file=mine.sh", "inputs={words.txt: inputs/words.txt}"])
+    jobs.prepare(cfg, job, site, "s3", tmp_path / "run")
+    assert "GLOBUSIRI_ARCHIVE=" not in (tmp_path / "run" / "executable_batch").read_text()
+
+
+def test_script_file_errors(cfg, tmp_path, work, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ConfigError, match="not both"):
+        resolve_job(cfg, "perlmutter_script_job.yaml",
+                    overrides=["template_file=shell_job_template.sh", "script_file=x.sh"])
+    # a --set of the other kind replaces the job file's choice
+    job, _ = resolve_job(cfg, "perlmutter_script_job.yaml", overrides=["template_file=shell_job_template.sh"])
+    assert job.template_file == "shell_job_template.sh" and job.script_file is None
+    with pytest.raises(ConfigError, match="script_file 'nope.sh' not found"):
+        resolve_job(cfg, "perlmutter_hello_job.yaml", overrides=["script_file=nope.sh"])
+    (tmp_path / "noshebang.sh").write_text("echo hi\n")
+    job, site = resolve_job(cfg, "perlmutter_script_job.yaml", overrides=["script_file=noshebang.sh"])
+    with pytest.raises(ConfigError, match="must start with a #! line"):
+        jobs.prepare(cfg, job, site, "s4", tmp_path / "run")
+
+
+def test_script_file_ignores_site_default_template(cfg, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg.site("NERSC_Perlmutter").job_defaults["template_file"] = "shell_job_template.sh"
+    job, _ = resolve_job(cfg, "perlmutter_script_job.yaml")
+    assert job.template_file is None and job.script_file
+
+
+def test_script_example_runs(cfg, tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    job, site = resolve_job(cfg, "perlmutter_script_job.yaml")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "srun").write_text("#!/bin/bash\nfor r in 0 1 2 3; do SLURM_PROCID=$r \"$@\"; done\n")
+    (bin_dir / "srun").chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    subprocess.run(["/bin/bash", job.script_file], check=True, capture_output=True, env=env, cwd=tmp_path)
+    assert (tmp_path / "result.txt").read_text().strip() == "Job completed"
+    assert len((tmp_path / "ranks.txt").read_text().splitlines()) == 4

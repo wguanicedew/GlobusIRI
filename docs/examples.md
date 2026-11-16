@@ -51,6 +51,24 @@ until the runs finish. Results are saved as `runs/hello-pm-001/result.txt` and
 `runs/hello-crux-001/result.txt` under WORK_DIR. Use a new run ID for each submission, or
 omit `--run-id` to generate a unique ID. Job files can be reused without editing.
 
+## Your own job script (no template)
+
+[`perlmutter_script_job.yaml`](../src/globusiri/data/jobs/perlmutter_script_job.yaml) sets
+`script_file: perlmutter_script_job.sh` instead of `template_file`. The
+[script](../src/globusiri/data/jobs/perlmutter_script_job.sh) is uploaded as `executable_batch`
+exactly as written; `{...}` is not substituted. IRI starts the script in the run directory with the
+job file's `resources`, so `srun` inside it gets `n_node × n_process_per_node` tasks.
+
+```bash
+globusiri job submit --job perlmutter_script_job.yaml --dry-run         # show what is uploaded
+globusiri submit --job perlmutter_script_job.yaml
+globusiri submit --job perlmutter_hello_job.yaml --set script_file=./my_job.sh   # any job file
+```
+
+A relative `script_file` is looked up in the current directory, next to the job file, then in
+WORK_DIR. If the job has `inputs`, a stage-in block that extracts them is inserted after the
+script's header, as for templates.
+
 ## Several processes per node (MPI-style launch)
 
 [`perlmutter_mpi_job.yaml`](../src/globusiri/data/jobs/perlmutter_mpi_job.yaml) and

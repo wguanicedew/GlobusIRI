@@ -17,7 +17,7 @@ def work(tmp_path, monkeypatch):
     paths = Paths(root)
     paths.ensure()
     shutil.copyfile(package_data_dir() / "sites.example.yaml", paths.default_config)
-    for f in (package_data_dir() / "jobs").glob("*.yaml"):
+    for f in [*(package_data_dir() / "jobs").glob("*.yaml"), *(package_data_dir() / "jobs").glob("*.sh")]:
         shutil.copyfile(f, paths.jobs_dir / f.name)
     return paths
 

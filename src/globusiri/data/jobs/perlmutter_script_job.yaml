@@ -1,0 +1,29 @@
+# Run a job script you wrote yourself, instead of rendering a template.
+# script_file is uploaded as executable_batch exactly as written ({...} is not substituted).
+# A relative path is looked up in the current directory, next to this job file, then in WORK_DIR.
+#   globusiri submit --job perlmutter_script_job.yaml
+#   globusiri submit --job perlmutter_script_job.yaml --set script_file=/path/to/my_job.sh
+# If the job has `inputs`, a stage-in block that extracts them (rank 0, other ranks wait) is
+# inserted after the script's #! and comment header, unless the script itself mentions
+# globusiri_inputs.tar.gz.
+site: NERSC_Perlmutter
+name: perlmutter-script
+script_file: perlmutter_script_job.sh
+resources:
+  project: m2616
+  queue: debug
+  constraint: cpu
+  n_node: 1
+  n_core_per_node: 256
+  n_process_per_node: 4
+  duration: 5m
+inputs: {}
+staging:
+  e2e:
+    enabled: false
+  https_stageout:
+    stdout_stderr: true
+    files: [result.txt, ranks.txt]
+cleanup:
+  remote_run_dir: false
+  e2e_stagein: false

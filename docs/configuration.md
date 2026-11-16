@@ -182,7 +182,7 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 
 - **Examples.** `globusiri init` copies all packaged job examples into `<WORK_DIR>/jobs/`.
   The `*_example_job.yaml` files show PanDA settings; `*_hello_job.yaml` run simple shell
-  commands, `*_mpi_job.yaml` start 4 processes per node, `perlmutter_wordcount_job.yaml` uploads a local file, and
+  commands, `*_mpi_job.yaml` start 4 processes per node, `perlmutter_script_job.yaml` runs a ready-made script (`script_file`), `perlmutter_wordcount_job.yaml` uploads a local file, and
   `perlmutter_transfer_job.yaml` enables E2E stage-in and stage-out. See
   [examples.md](examples.md) for commands and required edits.
 - **Lookup.** `--job NAME` is used as a path if it exists. Otherwise it is looked up as
@@ -202,6 +202,7 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 | `site` | Key in `sites.yaml`. A `SITE` argument on the CLI overrides it | queue name |
 | `name` | IRI job name prefix. The run ID is appended | `harvester_id-workerID` |
 | `template_file` | Batch script template, rendered with Harvester placeholder names. A bare name is looked up in `<WORK_DIR>/templates/`, then in the packaged templates | `templateFile` |
+| `script_file` | A ready job script, used instead of `template_file`. It is uploaded as written, with no `{placeholder}` rendering, and must start with `#!`. A relative path is looked up in the current directory, next to the job file, then in WORK_DIR, and is saved as an absolute path in the run's `job.yaml`. If one layer (site `job_defaults`, job file, `--set`) sets `script_file` and a more general layer sets `template_file`, the more specific one wins. A single layer that sets both is an error | — |
 | `template_vars` | Extra or overriding template placeholders | — |
 | `resources.project` | Account or allocation | `project` |
 | `resources.queue` | Remote queue | `remoteQueueName` |
@@ -248,7 +249,7 @@ remove them later with `globusiri job cleanup` and `globusiri e2e cleanup`.
 
 Every submission uploads at most two files to `<remote.work_dir>/<run_id>/`:
 
-1. `executable_batch`: the rendered `template_file`, made executable (chmod 0755).
+1. `executable_batch`: the rendered `template_file`, or the `script_file` as written. It is made executable (chmod 0755).
 2. `globusiri_inputs.tar.gz`: every file from `inputs`, stored under its `<remote_name>`. This file is
    only created if at least one input exists.
 
@@ -271,7 +272,8 @@ To write your own template, copy the block from `shell_job_template.sh` (the
 `---- input stage-in ----` lines) and put it before the first command that reads an input. A
 template that never mentions `{inputArchive}`, such as the Harvester pilot template
 `perlmutter_iri_submit_template.sh`, still works: GlobusIRI inserts the same block after its
-leading `#!`, `#SBATCH`, `#PBS` and comment lines.
+leading `#!`, `#SBATCH`, `#PBS` and comment lines. The same applies to a `script_file`, unless the
+script itself mentions `globusiri_inputs.tar.gz`; that tells GlobusIRI the script extracts the archive.
 
 The rest of the template therefore sees the inputs as plain files in the run dir. Placeholders such as
 `{pandaTokenFilename}` still resolve to the remote name.

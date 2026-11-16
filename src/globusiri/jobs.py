@@ -15,6 +15,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from math import ceil
+from pathlib import Path
 
 from .errors import ConfigError, JobFailed, RemoteError
 
@@ -125,6 +126,11 @@ def placeholders(job, site, run_id, local_inputs):
 def render_template(template_path, ph, out_path, *, stagein=None):
     """Render the template; ``stagein`` (shell text) goes right after the header directives."""
     text = template_path.read_text(encoding="utf-8").format_map(SafeDict(ph))
+    return write_script(text, out_path, stagein=stagein)
+
+
+def write_script(text, out_path, *, stagein=None):
+    """Write the job script (made executable); ``stagein`` goes right after the header directives."""
     if stagein:
         text = insert_after_header(text, stagein)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -311,15 +317,24 @@ def prepare(config, job, site, run_id, run_dir):
             skipped.append(f"{name} ({path})")
     job.snapshot(run_dir / "job.yaml")
     ph = placeholders(job, site, run_id, local_inputs)
-    if not job.template_file:
-        raise ConfigError("job has no template_file")
+    if not (job.template_file or job.script_file):
+        raise ConfigError("job has neither template_file nor script_file")
     archive = build_input_archive(local_inputs, run_dir / INPUT_ARCHIVE) if local_inputs else None
-    template = config.paths.find_template(job.template_file)
-    # Templates extract the archive themselves via STAGEIN_SNIPPET ({inputArchive}); for any
-    # other template (e.g. perlmutter_iri_submit_template.sh) the block is inserted after its header.
-    handles_stagein = "{inputArchive}" in template.read_text(encoding="utf-8")
-    script = render_template(template, ph, run_dir / EXECUTABLE,
-                             stagein=stagein_block(ph["work_dir"]) if archive and not handles_stagein else None)
+    if job.script_file:
+        # a ready job script: uploaded as written, no placeholder rendering
+        text = Path(job.script_file).read_text(encoding="utf-8")
+        if not text.startswith("#!"):
+            raise ConfigError(f"script_file {job.script_file} must start with a #! line")
+        handles_stagein = INPUT_ARCHIVE in text  # the script extracts the archive itself
+        script = write_script(text, run_dir / EXECUTABLE,
+                              stagein=stagein_block(ph["work_dir"]) if archive and not handles_stagein else None)
+    else:
+        template = config.paths.find_template(job.template_file)
+        # Templates extract the archive themselves via STAGEIN_SNIPPET ({inputArchive}); for any
+        # other template (e.g. perlmutter_iri_submit_template.sh) the block is inserted after its header.
+        handles_stagein = "{inputArchive}" in template.read_text(encoding="utf-8")
+        script = render_template(template, ph, run_dir / EXECUTABLE,
+                                 stagein=stagein_block(ph["work_dir"]) if archive and not handles_stagein else None)
     spec = build_job_spec(job, site, ph)
     sub = Submission(run_id=run_id, site=site.name, remote_dir=ph["work_dir"], remote_log_dir=ph["remote_log_dir"],
                      stdout_path=ph["stdout_path"], stderr_path=ph["stderr_path"], script=str(script),

@@ -15,6 +15,7 @@ def test_package_exports_api():
 def test_init_and_paths(tmp_path):
     res = init(tmp_path / "w", sites="ALCF_CRUX")
     assert (tmp_path / "w" / "config" / "sites.yaml") in res["written"]
+    assert (tmp_path / "w" / "jobs" / "perlmutter_script_job.sh") in res["written"]  # script_file example
     assert init(tmp_path / "w")["written"] == []  # kept on second run
     with pytest.raises(ConfigError):
         init(tmp_path / "w2", sites=["nope"])

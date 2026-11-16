@@ -94,7 +94,8 @@ def init(work_dir=None, *, sites=None, force=False):
                 yaml.safe_dump(raw, sort_keys=False)
         cfg.write_text(text, encoding="utf-8")
         written.append(cfg)
-    for src in sorted((data / "jobs").glob("*.yaml")):
+    # example job files, and the job scripts that `script_file` examples point to
+    for src in sorted([*(data / "jobs").glob("*.yaml"), *(data / "jobs").glob("*.sh")]):
         dst = paths.jobs_dir / src.name
         if dst.exists() and not force:
             kept.append(dst)

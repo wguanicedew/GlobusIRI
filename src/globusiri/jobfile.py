@@ -5,6 +5,7 @@ Dicts merge key by key; lists and scalars replace.
 """
 
 import copy
+import os
 from pathlib import Path
 
 import yaml
@@ -12,7 +13,7 @@ import yaml
 from .config import parse_duration
 from .errors import ConfigError
 
-TOP_LEVEL_KEYS = {"site", "name", "template_file", "template_vars", "resources", "inputs", "panda_auth_origin", "staging", "cleanup", "log"}
+TOP_LEVEL_KEYS = {"site", "name", "template_file", "script_file", "template_vars", "resources", "inputs", "panda_auth_origin", "staging", "cleanup", "log"}
 LAUNCHERS = (None, "single", "mpirun", "srun", "aprun", "jsrun")
 
 DEFAULT_JOB = {
@@ -107,6 +108,11 @@ class Job:
     @property
     def template_file(self):
         return self.data.get("template_file")
+
+    @property
+    def script_file(self):
+        """A ready job script (absolute path after resolve_job), used instead of template_file."""
+        return self.data.get("script_file")
 
     @property
     def template_vars(self):
@@ -238,4 +244,35 @@ def resolve_job(config, job_ref=None, *, site_name=None, overrides=None, snapsho
     data = deep_merge(data, file_data)
     data = deep_merge(data, override_data)
     data["site"] = site.name
-    return Job(expand_env(data), source=source), site
+    data = expand_env(data)
+    # template_file and script_file are alternatives: the most specific layer that sets one wins
+    # (--set > job file > site job_defaults); one layer setting both is an error.
+    for layer in (override_data, file_data, normalize_defaults(site.job_defaults)):
+        has_t, has_s = bool(layer.get("template_file")), bool(layer.get("script_file"))
+        if has_t and has_s:
+            raise ConfigError("set either template_file or script_file, not both")
+        if has_t or has_s:
+            data.pop("script_file" if has_t else "template_file", None)
+            break
+    if data.get("script_file"):
+        data["script_file"] = str(find_script_file(config, data["script_file"], source))
+    return Job(data, source=source), site
+
+
+def find_script_file(config, name, job_source=None):
+    """script_file lookup: absolute; else the current directory, the job file's directory, WORK_DIR.
+
+    The result is absolute, so a resumed run (which reads the job.yaml snapshot) finds the same file.
+    """
+    p = Path(os.path.expandvars(str(name))).expanduser()
+    if p.is_absolute():
+        candidates = [p]
+    else:
+        candidates = [Path.cwd() / p]
+        if job_source:
+            candidates.append(Path(job_source).parent / p)
+        candidates.append(config.paths.root / p)
+    for c in candidates:
+        if c.is_file():
+            return c.resolve()
+    raise ConfigError(f"script_file '{name}' not found (looked in: {', '.join(str(c) for c in candidates)})")
