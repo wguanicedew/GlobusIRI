@@ -1,19 +1,14 @@
 name: Test, build and publish
 
-# Tests and a build on every push and pull request; published to PyPI when a tag is pushed
-# (the tag is the version, e.g. v0.2.0 -> 0.2.0), and to TestPyPI on request (a manual run,
-# publish, as <pyproject version>.dev<run number>).
+# Tests and a build on every push and pull request (and on a manual run); published to PyPI
+# only when a tag is pushed (the tag is the version, e.g. v0.2.0 -> 0.2.0). Pushes to main and
+# pull requests are never published.
 on:
   push:
     branches: ["main"]
     tags: ["*"]
   pull_request:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish to TestPyPI (as <version>.dev<run number>; tags go to PyPI)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -58,8 +53,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      # A tag is the release version (v0.2.0 -> 0.2.0); any other run builds
-      # <pyproject version>.dev<run number>, unique for TestPyPI.
+      # A tag is the release version (v0.2.0 -> 0.2.0); any other run builds (but does not
+      # publish) <pyproject version>.dev<run number>.
       - name: Version
         id: version
         run: |
@@ -100,12 +95,12 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # With an API token (twine, user __token__): the repository (or organization) secret
-  # PYPI_TOKEN for pypi.org, TEST_PYPI_TOKEN for test.pypi.org. The first upload of a new
-  # project needs a token scoped to the whole account; later ones can use a project-scoped token.
+  # Tags only. With an API token (twine, user __token__): the repository (or organization)
+  # secret PYPI_TOKEN. The first upload of a new project needs a token scoped to the whole
+  # account; later ones can use a project-scoped token.
   publish:
     needs: [test, build]
-    if: github.ref_type == 'tag' || inputs.publish
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -118,10 +113,10 @@ jobs:
       - name: Publish ${{ needs.build.outputs.version }}
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.PYPI_TOKEN || secrets.TEST_PYPI_TOKEN }}
-          TWINE_REPOSITORY_URL: ${{ github.ref_type == 'tag' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+          TWINE_REPOSITORY_URL: https://upload.pypi.org/legacy/
         run: |
-          [[ -n $TWINE_PASSWORD ]] || { echo "::error::no PyPI token: set the secret PYPI_TOKEN (tags) or TEST_PYPI_TOKEN"; exit 1; }
+          [[ -n $TWINE_PASSWORD ]] || { echo "::error::no PyPI token: set the repository secret PYPI_TOKEN"; exit 1; }
           pip install twine
           # --skip-existing: a re-run of the same tag
           twine upload --skip-existing --non-interactive dist/globusiri-*.whl dist/globusiri-*.tar.gz
