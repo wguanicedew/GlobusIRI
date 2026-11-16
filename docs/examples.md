@@ -96,8 +96,9 @@ globusiri submit --job crux_script_job.yaml --set resources.n_node=2
 ```
 
 A relative `script_file` is looked up in the current directory, next to the job file, then in
-WORK_DIR. If the job has `inputs`, a stage-in block that extracts them is inserted after the
-script's header, as for templates.
+WORK_DIR. Inputs are uploaded next to the script as separate files. With `archive_inputs: true`,
+they are uploaded as one archive instead, and the `GLOBUSIRI_ARCHIVE` stage-in block that extracts
+it is inserted after the script's header; the scripts above therefore don't contain it.
 
 ## Several processes per node (MPI-style launch)
 
@@ -168,9 +169,23 @@ globusiri submit --job perlmutter_wordcount_job.yaml \
   --input words.txt=/absolute/path/to/another.txt
 ```
 
-For these Perlmutter examples, uploads use IRI according to the example site config;
-downloads use Globus HTTPS. Crux uploads use Globus HTTPS. Missing input files are skipped
-by the uploader; the word-count script explicitly fails if `words.txt` is missing.
+Each input is uploaded next to `executable_batch` as its own file, over Globus HTTPS
+(`remote.upload_method`). Downloads also use Globus HTTPS. Missing input files are skipped; the
+word-count script explicitly fails if `words.txt` is missing.
+
+For jobs with many input files, pack them into one upload instead:
+
+```bash
+globusiri submit --job perlmutter_wordcount_job.yaml --set archive_inputs=true
+```
+
+The inputs are then uploaded as a single `globusiri_inputs.tar.gz`, and the job script unpacks it
+before `command` runs. `shell_job_template.sh` contains a `GLOBUSIRI_ARCHIVE` stage-in block for
+this: rank 0 extracts the archive, and any other ranks wait until it is done. You can see the
+block with `globusiri job submit --job perlmutter_wordcount_job.yaml --dry-run`. Without an archive,
+`GLOBUSIRI_ARCHIVE` is empty and the block does nothing. Your own templates and `script_file`
+scripts do not need the block: GlobusIRI inserts it after their header when there is an archive.
+See [Input archive](configuration.md#the-globusiri_archive-stage-in-block).
 
 ## E2E stage-in, compute, and stage-out
 

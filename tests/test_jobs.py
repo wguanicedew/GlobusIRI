@@ -95,7 +95,7 @@ def test_inputs_packed_into_one_archive(cfg, tmp_path, work):
 
     (work.inputs_dir / "panda_token").write_text("t")
     (work.inputs_dir / "panda_token_key").write_text("k")
-    job, site = resolve_job(cfg, "crux_example_job.yaml", overrides=["inputs.x509UserProxy=null"])
+    job, site = resolve_job(cfg, "crux_example_job.yaml", overrides=["inputs.x509UserProxy=null", "archive_inputs=true"])
     sub, _ = jobs.prepare(cfg, job, site, "r4", tmp_path)
     assert sub.archive == str(tmp_path / jobs.INPUT_ARCHIVE)
     assert sorted(sub.archived) == ["pandaTokenFilename", "pandaTokenKeyPath"]
@@ -112,7 +112,7 @@ def test_inputs_packed_into_one_archive(cfg, tmp_path, work):
 def test_stagein_inserted_into_template_without_it(cfg, tmp_path, work):
     # perlmutter_iri_submit_template.sh (the Harvester pilot template) has no {inputArchive}
     (work.inputs_dir / "panda_token").write_text("t")
-    job, site = resolve_job(cfg, "perlmutter_example_job.yaml", overrides=["inputs.x509UserProxy=null"])
+    job, site = resolve_job(cfg, "perlmutter_example_job.yaml", overrides=["inputs.x509UserProxy=null", "archive_inputs=true"])
     jobs.prepare(cfg, job, site, "r8", tmp_path)
     text = (tmp_path / "executable_batch").read_text()
     assert text.count("input stage-in: rank 0") == 1
@@ -145,7 +145,7 @@ def test_stagein_rank0_extracts_others_wait(cfg, tmp_path, work):
     import time
 
     (work.inputs_dir / "words.txt").write_text("one two three\n")
-    job, site = resolve_job(cfg, "perlmutter_wordcount_job.yaml")
+    job, site = resolve_job(cfg, "perlmutter_wordcount_job.yaml", overrides=["archive_inputs=true"])
     local_dir = tmp_path / "local"
     sub, _ = jobs.prepare(cfg, job, site, "r7", local_dir)
     remote = tmp_path / "remote"  # stands in for the shared remote run dir
@@ -384,7 +384,7 @@ def test_script_file_no_rendering_and_stagein(cfg, tmp_path, work, monkeypatch):
     (tmp_path / "mine.sh").write_text("#!/bin/bash\n#SBATCH -q debug\necho {work_dir} ${HOME}\n")
     (work.inputs_dir / "words.txt").write_text("a b\n")
     job, site = resolve_job(cfg, "perlmutter_hello_job.yaml",
-                            overrides=["script_file=mine.sh", "inputs={words.txt: inputs/words.txt}"])
+                            overrides=["script_file=mine.sh", "inputs={words.txt: inputs/words.txt}", "archive_inputs=true"])
     sub, _ = jobs.prepare(cfg, job, site, "s2", tmp_path / "run")
     text = (tmp_path / "run" / "executable_batch").read_text()
     assert "echo {work_dir} ${HOME}" in text  # not rendered
@@ -397,7 +397,7 @@ def test_script_file_that_extracts_itself_gets_no_block(cfg, tmp_path, work, mon
     (tmp_path / "mine.sh").write_text("#!/bin/bash\ntar -xzf globusiri_inputs.tar.gz\n")
     (work.inputs_dir / "words.txt").write_text("a b\n")
     job, site = resolve_job(cfg, "perlmutter_hello_job.yaml",
-                            overrides=["script_file=mine.sh", "inputs={words.txt: inputs/words.txt}"])
+                            overrides=["script_file=mine.sh", "inputs={words.txt: inputs/words.txt}", "archive_inputs=true"])
     jobs.prepare(cfg, job, site, "s3", tmp_path / "run")
     assert "GLOBUSIRI_ARCHIVE=" not in (tmp_path / "run" / "executable_batch").read_text()
 
@@ -461,3 +461,29 @@ def test_crux_script_example_runs(cfg, tmp_path, monkeypatch, n_node):
     lines = (tmp_path / "ranks.txt").read_text().splitlines()
     assert [line.split()[1] for line in lines] == [str(r) for r in range(4 * n_node)]
     assert (tmp_path / "result.txt").read_text().strip() == "Job completed"
+
+
+def test_archive_inputs_false_uploads_each_file(cfg, tmp_path, work):
+    (work.inputs_dir / "panda_token").write_text("t")
+    (work.inputs_dir / "panda_token_key").write_text("k")
+    job, site = resolve_job(cfg, "crux_example_job.yaml",
+                            overrides=["archive_inputs=false", "inputs.x509UserProxy=null"])
+    sub, _ = jobs.prepare(cfg, job, site, "a1", tmp_path)
+    assert sub.archive is None and sub.archived == [] and not (tmp_path / jobs.INPUT_ARCHIVE).exists()
+    assert set(sub.input_files) == {"pandaTokenFilename", "pandaTokenKeyPath"}
+    text = (tmp_path / "executable_batch").read_text()
+    assert 'GLOBUSIRI_ARCHIVE=""' in text  # the template's block does nothing
+    assert 'if [ -n "pandaTokenFilename" ]' in text  # placeholders still name the uploaded files
+
+
+def test_archive_inputs_false_no_block_inserted(cfg, tmp_path, work):
+    (work.inputs_dir / "panda_token").write_text("t")
+    job, site = resolve_job(cfg, "perlmutter_example_job.yaml",
+                            overrides=["archive_inputs=false", "inputs.x509UserProxy=null"])
+    jobs.prepare(cfg, job, site, "a2", tmp_path)
+    assert "GLOBUSIRI_ARCHIVE" not in (tmp_path / "executable_batch").read_text()
+
+
+def test_archive_inputs_must_be_bool(cfg):
+    with pytest.raises(ConfigError, match="archive_inputs must be true or false"):
+        resolve_job(cfg, "perlmutter_hello_job.yaml", overrides=["archive_inputs=maybe"])

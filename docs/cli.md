@@ -182,7 +182,7 @@ for `--dry-run` and for debugging a template.
 1. Merges the site's `job_defaults`, the job file, and any `--set` values, then saves the result to `runs/<run_id>/job.yaml`.
 2. Renders the template with Harvester placeholder names.
 3. Runs IRI `mkdir -p` on `<work_dir>/<run>` and `<log_dir>/<run>`.
-4. Packs the job's `inputs` into `globusiri_inputs.tar.gz` and uploads exactly two files, `executable_batch` and that archive, using `remote.upload_method`. Rank 0 of the job extracts the archive; the other ranks wait for it (see [configuration](configuration.md#input-archive)).
+4. Uploads `executable_batch` and each of the job's `inputs` using `remote.upload_method`. With `archive_inputs: true`, the inputs are packed into one `globusiri_inputs.tar.gz` instead, and the script's `GLOBUSIRI_ARCHIVE` block extracts it on rank 0 while the other ranks wait (see [configuration](configuration.md#input-archive)).
 5. Runs `chmod 0755` on `executable_batch`.
 6. Submits the job and prints the job ID.
 

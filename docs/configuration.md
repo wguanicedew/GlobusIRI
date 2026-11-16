@@ -215,7 +215,8 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 | `resources.exclusive_node_use`, `reservation_id` | Pass-through settings | same |
 | `resources.custom_attributes` | Merged into `job_spec.attributes.custom_attributes` | same |
 | `resources.signal`, `no_requeue`, `licenses`, `export`, `image`, `volume`, `pre_launch`, `post_launch` | Optional pass-through settings | same |
-| `inputs.<remote_name>` | Local file packed into the input archive and extracted as `<remote.work_dir>/<run_id>/<remote_name>` (see [Input archive](#input-archive)). Relative paths are resolved against WORK_DIR, and `${X509_USER_PROXY}` is allowed. Missing files are skipped | `pandaTokenFilename`, `pandaTokenKeyPath`, `x509UserProxy` |
+| `inputs.<remote_name>` | Local file uploaded as `<remote.work_dir>/<run_id>/<remote_name>`, or packed into the input archive with `archive_inputs: true` (see [Input archive](#input-archive)). Relative paths are resolved against WORK_DIR, and `${X509_USER_PROXY}` is allowed. Missing files are skipped | `pandaTokenFilename`, `pandaTokenKeyPath`, `x509UserProxy` |
+| `archive_inputs` | `false` (default): each input is uploaded as its own file and nothing is extracted. `true`: the inputs are uploaded as one `globusiri_inputs.tar.gz`, which the job script extracts. See [Input archive](#input-archive) | — |
 | `panda_auth_origin` | `{tokenOrigin}` placeholder | `pandaAuthOrigin` |
 | (derived) | `{inputArchive}`: `globusiri_inputs.tar.gz` if the job has inputs, else empty. See [Input archive](#input-archive) | — |
 | `staging.e2e.enabled` | Whether this job moves data with Globus E2E Transfer. If `false` (the default), the E2E steps are skipped and the E2E token is **not required or validated** for this job | preparator / stager configured or not |
@@ -247,35 +248,57 @@ remove them later with `globusiri job cleanup` and `globusiri e2e cleanup`.
 
 ### Input archive
 
-Every submission uploads at most two files to `<remote.work_dir>/<run_id>/`:
+Every submission uploads `executable_batch` to `<remote.work_dir>/<run_id>/`. This is the
+rendered `template_file`, or the `script_file` as written, made executable (chmod 0755). How the
+`inputs` travel depends on `archive_inputs`:
 
-1. `executable_batch`: the rendered `template_file`, or the `script_file` as written. It is made executable (chmod 0755).
-2. `globusiri_inputs.tar.gz`: every file from `inputs`, stored under its `<remote_name>`. This file is
-   only created if at least one input exists.
+- `false` (the default): each input is uploaded as its own file, `<remote_name>`. Nothing has to
+  be extracted, so the stage-in block below does nothing and is not inserted.
+- `true`: every input is packed into one `globusiri_inputs.tar.gz`, stored under its
+  `<remote_name>`, so a submission uploads at most two files. The job script extracts the archive
+  with the stage-in block below. Use this when a job has many input files, because each upload is
+  a separate HTTPS request.
 
-The job script extracts the archive. The packaged `shell_job_template.sh` and
-`crux_iri_submit_template.sh` contain a stage-in block, right after `cd {work_dir}`. The block
-is driven by the `{inputArchive}` placeholder, which is `globusiri_inputs.tar.gz` when the job has
-inputs and empty otherwise; when it is empty, the block does nothing:
+Set it in the job file, or for one submission with `--set archive_inputs=true`.
 
-- The block works out the rank from `SLURM_PROCID`, `PMIX_RANK`, `PMI_RANK`, `PALS_RANKID` or
-  `OMPI_COMM_WORLD_RANK`. If none of these is set, the rank is 0. This means the block works both
-  when the script runs once (Crux, where the script starts `mpiexec` itself) and when it runs once
-  per rank (Perlmutter, where NERSC's IRI starts the script under `srun`).
-- Rank 0 extracts the archive in the run dir, and then creates `.globusiri_inputs.done`.
-  If extraction fails, it creates `.globusiri_inputs.failed` and exits.
+#### The `GLOBUSIRI_ARCHIVE` stage-in block
+
+The job script extracts the archive with this block, which starts and ends with
+`# ---- input stage-in ----` lines. It is in `shell_job_template.sh` and
+`crux_iri_submit_template.sh`, right after `cd {work_dir}`:
+
+```sh
+GLOBUSIRI_ARCHIVE="{inputArchive}"
+if [ -n "$GLOBUSIRI_ARCHIVE" ]; then
+    # rank 0 extracts the archive and writes .globusiri_inputs.done;
+    # the other ranks wait for that file
+    ...
+fi
+```
+
+- `{inputArchive}` is `globusiri_inputs.tar.gz` when the job has inputs and `archive_inputs` is
+  true. Otherwise it is empty, so `GLOBUSIRI_ARCHIVE` is empty and the block does nothing. That
+  is why the block can stay in a template whether or not a job has inputs.
+- The rank comes from `SLURM_PROCID`, `PMIX_RANK`, `PMI_RANK`, `PALS_RANKID` or
+  `OMPI_COMM_WORLD_RANK`. If none is set, it is 0. The block works both when the script runs once
+  (Crux, where the script starts `mpiexec` itself) and when it runs once per rank (Perlmutter, where
+  NERSC's IRI starts the script under `srun`).
+- Rank 0 extracts the archive in the run dir, then creates `.globusiri_inputs.done`. If extraction
+  fails, it creates `.globusiri_inputs.failed` and exits.
 - The other ranks wait until `.globusiri_inputs.done` appears and then continue. They exit
-  immediately if `.globusiri_inputs.failed` appears. They also exit if they have waited
+  immediately if `.globusiri_inputs.failed` appears. They also exit after waiting
   `$GLOBUSIRI_STAGEIN_TIMEOUT` seconds (default 1800).
 
-To write your own template, copy the block from `shell_job_template.sh` (the
-`---- input stage-in ----` lines) and put it before the first command that reads an input. A
-template that never mentions `{inputArchive}`, such as the Harvester pilot template
-`perlmutter_iri_submit_template.sh`, still works: GlobusIRI inserts the same block after its
-leading `#!`, `#SBATCH`, `#PBS` and comment lines. The same applies to a `script_file`, unless the
-script itself mentions `globusiri_inputs.tar.gz`; that tells GlobusIRI the script extracts the archive.
+**Do not copy the block into your own templates or scripts.** If a template never mentions
+`{inputArchive}`, or a `script_file` never mentions `globusiri_inputs.tar.gz`, GlobusIRI inserts
+the block after its leading `#!`, `#SBATCH`, `#PBS` and comment lines. This happens only when there
+is an archive to extract. The Harvester pilot template `perlmutter_iri_submit_template.sh` and the
+`*_script_job.sh` examples work this way. Put the block in yourself only to control where it
+runs, for example after a `cd` or a module load that has to come first. Copy it unchanged from
+`shell_job_template.sh` into a template. In a `script_file`, extract `globusiri_inputs.tar.gz`
+yourself instead, because placeholders are not rendered there.
 
-The rest of the template therefore sees the inputs as plain files in the run dir. Placeholders such as
+After the block, the script sees the inputs as plain files in the run dir. Placeholders such as
 `{pandaTokenFilename}` still resolve to the remote name.
 
 ## Token file formats

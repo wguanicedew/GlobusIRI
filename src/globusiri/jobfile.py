@@ -13,7 +13,7 @@ import yaml
 from .config import parse_duration
 from .errors import ConfigError
 
-TOP_LEVEL_KEYS = {"site", "name", "template_file", "script_file", "template_vars", "resources", "inputs", "panda_auth_origin", "staging", "cleanup", "log"}
+TOP_LEVEL_KEYS = {"site", "name", "template_file", "script_file", "template_vars", "resources", "inputs", "archive_inputs", "panda_auth_origin", "staging", "cleanup", "log"}
 LAUNCHERS = (None, "single", "mpirun", "srun", "aprun", "jsrun")
 
 DEFAULT_JOB = {
@@ -31,6 +31,9 @@ DEFAULT_JOB = {
         "custom_attributes": {},
     },
     "inputs": {},
+    # false: each input is uploaded as its own file;
+    # true: inputs travel as one tar.gz that the job script extracts (rank 0, other ranks wait)
+    "archive_inputs": False,
     "panda_auth_origin": "",
     "staging": {
         "e2e": {"enabled": False, "stagein": {"manifest": None, "rucio": [], "files": []},
@@ -127,6 +130,10 @@ class Job:
         return self.data.get("inputs") or {}
 
     @property
+    def archive_inputs(self):
+        return bool(self.data.get("archive_inputs", False))
+
+    @property
     def panda_auth_origin(self):
         return self.data.get("panda_auth_origin") or ""
 
@@ -165,6 +172,8 @@ class Job:
             except (TypeError, ValueError):
                 raise ConfigError(f"resources.{key} must be a positive integer") from None
         self.duration  # validates format
+        if not isinstance(self.data.get("archive_inputs", False), bool):
+            raise ConfigError("archive_inputs must be true or false")
         if not self.e2e_enabled:
             for direction in ("stagein", "stageout"):
                 spec = self.e2e.get(direction) or {}

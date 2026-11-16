@@ -135,14 +135,14 @@ def test_run_end_to_end_without_e2e(cfg, monkeypatch, work):
     monkeypatch.setattr(jobs.time, "sleep", lambda s: None)
     (work.inputs_dir / "panda_token").write_text("t")
 
-    job, site = resolve_job(cfg, "crux_example_job.yaml")  # Crux uploads via globus_https
+    job, site = resolve_job(cfg, "crux_example_job.yaml", overrides=["archive_inputs=true"])  # Crux uploads via globus_https
     state = workflow.run(cfg, job, site, run_id="R1", do_validate=False, interval=0, echo=lambda *a: None)
     steps = {k: v["status"] for k, v in state.data["steps"].items()}
     assert steps == {"validate": "skipped", "e2e_stagein": "skipped", "upload": "done", "submit": "done",
                      "monitor": "done", "https_stageout": "done", "e2e_stageout": "skipped",
                      "cleanup": "skipped"}
     remote_dir = "/lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs/R1"
-    # only two uploads: the job script and one archive holding every input
+    # archive_inputs: only two uploads, the job script and one archive holding every input
     assert [p[1] for p in https.puts] == [f"{remote_dir}/executable_batch", f"{remote_dir}/globusiri_inputs.tar.gz"]
     assert ("chmod", f"{remote_dir}/executable_batch", "0755") in iri.calls
     assert ("upload",) not in [c[:1] for c in iri.calls]  # nothing uploaded via IRI on Crux
@@ -235,3 +235,17 @@ def test_workdir_check_falls_back_to_ls(cfg, monkeypatch, stat_status, ls_status
     monkeypatch.setattr(services, "iri_client", lambda c, s, **kw: iri)
     check = V.iri_workdir_check(cfg, cfg.site("ALCF_CRUX"))
     assert iri.calls == ["stat", "ls"] and check.status == expected and detail in check.detail
+
+
+def test_run_uploads_each_input_without_archive(cfg, monkeypatch, work):
+    all_tokens(cfg)
+    iri, https = FakeIri(["completed"]), FakeHttps(200)
+    monkeypatch.setattr(services, "iri_client", lambda c, s, **kw: iri)
+    monkeypatch.setattr(services, "https_client", lambda c, s, **kw: https)
+    monkeypatch.setattr(jobs.time, "sleep", lambda s: None)
+    (work.inputs_dir / "panda_token").write_text("t")
+    job, site = resolve_job(cfg, "crux_example_job.yaml")  # archive_inputs defaults to false
+    assert job.archive_inputs is False
+    workflow.run(cfg, job, site, run_id="R9", do_validate=False, interval=0, echo=lambda *a: None)
+    remote_dir = "/lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs/R9"
+    assert [p[1] for p in https.puts] == [f"{remote_dir}/executable_batch", f"{remote_dir}/pandaTokenFilename"]

@@ -27,13 +27,16 @@ resources:
   reservation_id: null
   custom_attributes: {}         # merged over site job_defaults.custom_attributes
 
-# Local files packed into globusiri_inputs.tar.gz; rank 0 of the job extracts it into
-# <remote.work_dir>/<run_id>/ (members named <remote_name>) while the other ranks wait.
-# Only executable_batch (the rendered template, chmod 0755) and the archive are uploaded.
+# Local files that end up in <remote.work_dir>/<run_id>/ as <remote_name>.
 inputs:
   pandaTokenFilename: inputs/panda_token
   pandaTokenKeyPath: inputs/panda_token_key
   x509UserProxy: ${X509_USER_PROXY}
+# false (default): each input is uploaded as its own file.
+# true: the inputs are uploaded as one globusiri_inputs.tar.gz, which the job script's
+#   GLOBUSIRI_ARCHIVE block extracts (rank 0; the other ranks wait). Templates without that
+#   block get it inserted after their header. Fewer uploads for many input files.
+archive_inputs: false
 panda_auth_origin: atlas.pilot
 
 # Which tokens this job needs (used by `globusiri validate --job` and by `run`):

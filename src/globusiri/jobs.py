@@ -22,7 +22,7 @@ from .errors import ConfigError, JobFailed, RemoteError
 log = logging.getLogger("globusiri.jobs")
 
 EXECUTABLE = "executable_batch"
-# All job inputs travel in this one archive; the job script extracts it (see stagein_block).
+# With archive_inputs: true, all job inputs travel in this one archive; the job script extracts it (see stagein_block).
 INPUT_ARCHIVE = "globusiri_inputs.tar.gz"
 STAGEIN_DONE = ".globusiri_inputs.done"      # marker files written by STAGEIN_SNIPPET
 STAGEIN_FAILED = ".globusiri_inputs.failed"
@@ -118,7 +118,7 @@ def placeholders(job, site, run_id, local_inputs):
     for name in job.inputs:
         ph[name] = name if name in local_inputs else ""
     # the input archive's remote name, or "" when the job has no inputs (see STAGEIN_SNIPPET)
-    ph["inputArchive"] = INPUT_ARCHIVE if local_inputs else ""
+    ph["inputArchive"] = INPUT_ARCHIVE if local_inputs and job.archive_inputs else ""
     ph.update(job.template_vars)
     return ph
 
@@ -297,6 +297,7 @@ class Submission:
     job_spec: dict
     archive: str = None                                  # local INPUT_ARCHIVE, None if no inputs
     archived: list = field(default_factory=list)        # remote names packed in the archive
+    input_files: dict = field(default_factory=dict)     # archive_inputs: false -> {remote name: local path}
     uploaded: list = field(default_factory=list)
     skipped_inputs: list = field(default_factory=list)
     job_id: str = None
@@ -319,7 +320,8 @@ def prepare(config, job, site, run_id, run_dir):
     ph = placeholders(job, site, run_id, local_inputs)
     if not (job.template_file or job.script_file):
         raise ConfigError("job has neither template_file nor script_file")
-    archive = build_input_archive(local_inputs, run_dir / INPUT_ARCHIVE) if local_inputs else None
+    archive = (build_input_archive(local_inputs, run_dir / INPUT_ARCHIVE)
+               if local_inputs and job.archive_inputs else None)
     if job.script_file:
         # a ready job script: uploaded as written, no placeholder rendering
         text = Path(job.script_file).read_text(encoding="utf-8")
@@ -338,19 +340,23 @@ def prepare(config, job, site, run_id, run_dir):
     spec = build_job_spec(job, site, ph)
     sub = Submission(run_id=run_id, site=site.name, remote_dir=ph["work_dir"], remote_log_dir=ph["remote_log_dir"],
                      stdout_path=ph["stdout_path"], stderr_path=ph["stderr_path"], script=str(script),
-                     job_spec=spec, archive=str(archive) if archive else None, archived=list(local_inputs),
+                     job_spec=spec, archive=str(archive) if archive else None,
+                     archived=list(local_inputs) if archive else [],
+                     input_files={} if archive else {k: str(v) for k, v in local_inputs.items()},
                      skipped_inputs=skipped)
     return sub, local_inputs
 
 
 def upload_inputs(config, site, sub, iri, https=None):
-    """mkdir the remote dirs, upload executable_batch and the input archive, chmod the executable."""
+    """mkdir the remote dirs, upload executable_batch and the input archive (or, with
+    archive_inputs: false, each input file), chmod the executable."""
     iri.mkdir(sub.remote_dir, resource_id=site.work_dir_resource_id, parents=True)
     if sub.remote_log_dir != sub.remote_dir:
         iri.mkdir(sub.remote_log_dir, resource_id=site.log_dir_resource_id, parents=True)
     files = {EXECUTABLE: sub.script}
     if sub.archive:
         files[INPUT_ARCHIVE] = sub.archive
+    files.update(sub.input_files)  # archive_inputs: false -> each input on its own
     for name, local in files.items():
         remote = posixpath.join(sub.remote_dir, name)
         if site.upload_method == "globus_https":
