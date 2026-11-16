@@ -437,3 +437,27 @@ def test_script_example_runs(cfg, tmp_path, monkeypatch):
                            env={**env, "SLURM_PROCID": str(rank), "SLURM_NTASKS": "4"}, cwd=tmp_path)
         assert r.stdout.startswith(f"rank {rank} of 4 on ")
     assert (tmp_path / "result.txt").read_text().strip() == "Job completed"
+
+
+@pytest.mark.parametrize("n_node", [1, 2])
+def test_crux_script_example_runs(cfg, tmp_path, monkeypatch, n_node):
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    job, site = resolve_job(cfg, "crux_script_job.yaml", overrides=[f"resources.n_node={n_node}"])
+    sub, _ = jobs.prepare(cfg, job, site, "c1", tmp_path / "run")
+    assert sub.job_spec["resources"] == {"node_count": n_node, "exclusive_node_use": True}
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "mpiexec").write_text(
+        "#!/bin/bash\nn=$2\nwhile [ $# -gt 0 ] && [ \"$1\" != bash ]; do shift; done\n"
+        "for r in $(seq 0 $((n - 1))); do PALS_RANKID=$r PALS_LOCAL_RANKID=$((r % 4)) \"$@\"; done\n")
+    (bin_dir / "mpiexec").chmod(0o755)
+    nodefile = tmp_path / "nodefile"
+    nodefile.write_text("".join(f"node{i}\n" * 2 for i in range(n_node)))  # PBS lists hosts per chunk
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "PMI", "PALS_", "PBS_"))}
+    env.update(PATH=f"{bin_dir}:{env['PATH']}", PBS_NODEFILE=str(nodefile), PBS_JOBID="1.crux")
+    subprocess.run(["/bin/bash", job.script_file], check=True, capture_output=True, env=env, cwd=tmp_path)
+    lines = (tmp_path / "ranks.txt").read_text().splitlines()
+    assert [line.split()[1] for line in lines] == [str(r) for r in range(4 * n_node)]
+    assert (tmp_path / "result.txt").read_text().strip() == "Job completed"

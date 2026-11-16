@@ -1,0 +1,31 @@
+# Run a job script you wrote yourself on ALCF Crux, instead of rendering a template.
+# script_file is uploaded as executable_batch exactly as written ({...} is not substituted).
+# A relative path is looked up in the current directory, next to this job file, then in WORK_DIR.
+#   globusiri submit --job crux_script_job.yaml
+#   globusiri submit --job crux_script_job.yaml --set resources.n_node=2      # 8 ranks
+#   globusiri submit --job crux_script_job.yaml --set script_file=/path/to/my_job.sh
+# On Crux the script runs once and starts the ranks with mpiexec (see crux_script_job.sh);
+# Crux's IRI sends PBS only node_count, so processes per node are set in the script.
+# If the job has `inputs`, a stage-in block that extracts them is inserted after the
+# script's #! and comment header, unless the script itself mentions globusiri_inputs.tar.gz.
+site: ALCF_CRUX
+name: crux-script
+script_file: crux_script_job.sh
+resources:
+  project: ATLAS_workflow_ALCF
+  queue: debug
+  n_node: 1
+  duration: 10m
+  custom_attributes:
+    filesystems: home:eagle
+    place: scatter
+inputs: {}
+staging:
+  e2e:
+    enabled: false
+  https_stageout:
+    stdout_stderr: true
+    files: [result.txt, ranks.txt]
+cleanup:
+  remote_run_dir: false
+  e2e_stagein: false

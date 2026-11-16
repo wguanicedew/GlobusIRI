@@ -182,7 +182,7 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 
 - **Examples.** `globusiri init` copies all packaged job examples into `<WORK_DIR>/jobs/`.
   The `*_example_job.yaml` files show PanDA settings; `*_hello_job.yaml` run simple shell
-  commands, `*_mpi_job.yaml` start 4 processes per node, `perlmutter_script_job.yaml` runs a ready-made script (`script_file`), `perlmutter_wordcount_job.yaml` uploads a local file, and
+  commands, `*_mpi_job.yaml` start 4 processes per node, `*_script_job.yaml` run a ready-made script (`script_file`), `perlmutter_wordcount_job.yaml` uploads a local file, and
   `perlmutter_transfer_job.yaml` enables E2E stage-in and stage-out. See
   [examples.md](examples.md) for commands and required edits.
 - **Lookup.** `--job NAME` is used as a path if it exists. Otherwise it is looked up as

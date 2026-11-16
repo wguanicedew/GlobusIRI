@@ -58,12 +58,22 @@ omit `--run-id` to generate a unique ID. Job files can be reused without editing
 [script](../src/globusiri/data/jobs/perlmutter_script_job.sh) is uploaded as `executable_batch`
 exactly as written; `{...}` is not substituted. IRI starts the script in the run directory with the
 job file's `resources`. On Perlmutter, NERSC's IRI starts it with `srun`, once per rank
-(`n_node × n_process_per_node` copies), so the script must not call `srun` itself; see below.
+(`n_node × n_process_per_node` copies), so **on Perlmutter, do not call `srun` in the job script**; see below.
 
 ```bash
 globusiri job submit --job perlmutter_script_job.yaml --dry-run         # show what is uploaded
 globusiri submit --job perlmutter_script_job.yaml
 globusiri submit --job perlmutter_hello_job.yaml --set script_file=./my_job.sh   # any job file
+```
+
+[`crux_script_job.yaml`](../src/globusiri/data/jobs/crux_script_job.yaml) does the same on Crux
+with [`crux_script_job.sh`](../src/globusiri/data/jobs/crux_script_job.sh). There, PBS runs the
+script once, so the script starts the ranks itself with `mpiexec`. Crux's IRI sends PBS only the
+node count, so the script sets the processes per node itself (`PPN=4`, `DEPTH=32`). It takes the node count from
+`$PBS_NODEFILE`, so `--set resources.n_node=2` gives 8 ranks without editing the script.
+
+```bash
+globusiri submit --job crux_script_job.yaml --set resources.n_node=2
 ```
 
 A relative `script_file` is looked up in the current directory, next to the job file, then in
@@ -91,7 +101,7 @@ The two facilities start the ranks differently, so the two examples are written 
 | Who starts the ranks | NERSC's IRI | the script: Cray PALS `mpiexec -n $GLOBUSIRI_NPROC --ppn $GLOBUSIRI_NPROC_PER_NODE --depth $GLOBUSIRI_NCORE_PER_PROC --cpu-bind depth` |
 | `command` is | the per-rank work (`$SLURM_PROCID` is the rank) | the launch of the ranks |
 
-On Perlmutter, do not call `srun` in the job script. The ranks already hold the job's CPUs, so a
+**On Perlmutter, do not call `srun` in the job script.** The ranks already hold the job's CPUs, so a
 nested `srun` waits ("step creation temporarily disabled ... Requested nodes are busy") until the
 job's time limit. In the example, each rank writes `rank_<N>.txt`, and rank 0 waits for all of them and
 gathers them into `ranks.txt`. `n_core_per_node: 256` counts Slurm CPUs (hyperthreads), so each

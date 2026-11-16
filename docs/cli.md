@@ -186,6 +186,11 @@ for `--dry-run` and for debugging a template.
 5. Runs `chmod 0755` on `executable_batch`.
 6. Submits the job and prints the job ID.
 
+> **On Perlmutter, do not call `srun` in the job script.** NERSC's IRI already starts the script
+> under `srun`, once per rank (`n_node × n_process_per_node` copies); a nested `srun` waits for
+> CPUs the ranks hold until the job's time limit. On Crux the script runs once and starts its
+> ranks with `mpiexec`. See [several processes per node](examples.md#several-processes-per-node-mpi-style-launch).
+
 `--dry-run` prints the rendered script and `job_spec` without contacting IRI, and leaves no run
 directory behind. Without `--dry-run`, `job submit` first validates the IRI (and, if needed,
 HTTPS) token, unless `--no-validate` is given. State is kept in `<WORK_DIR>/runs/<run_id>/`.

@@ -37,6 +37,11 @@ The job YAML describes the batch job (`resources`, `template_file`), the inputs 
 HTTPS (`inputs`), and the files moved by E2E (`staging.e2e.stagein/stageout`, as a manifest,
 Rucio DIDs, or an inline `files:` list).
 
+> **On Perlmutter, do not call `srun` in the job script.** NERSC's IRI already starts the script
+> under `srun`, once per rank (`n_node × n_process_per_node` copies); a nested `srun` waits for
+> CPUs the ranks hold until the job's time limit. On Crux the script runs once and starts its
+> ranks with `mpiexec`. See [several processes per node](docs/examples.md#several-processes-per-node-mpi-style-launch).
+
 Submit as many jobs as needed, including jobs at different sites. One `monitor` call checks
 all active runs in the same WORK_DIR; `daemon` keeps doing that and picks up new submissions:
 
