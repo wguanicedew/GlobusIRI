@@ -23,7 +23,7 @@ log = logging.getLogger("globusiri.jobs")
 EXECUTABLE = "executable_batch"
 # All job inputs travel in this one archive; the job script extracts it (see stagein_block).
 INPUT_ARCHIVE = "globusiri_inputs.tar.gz"
-STAGEIN_DONE = ".globusiri_inputs.done"
+STAGEIN_DONE = ".globusiri_inputs.done"      # marker files written by STAGEIN_SNIPPET
 STAGEIN_FAILED = ".globusiri_inputs.failed"
 
 # IRI status.state -> GlobusIRI state
@@ -116,6 +116,8 @@ def placeholders(job, site, run_id, local_inputs):
     # each input placeholder is its remote file name if the file is uploaded, else ""
     for name in job.inputs:
         ph[name] = name if name in local_inputs else ""
+    # the input archive's remote name, or "" when the job has no inputs (see STAGEIN_SNIPPET)
+    ph["inputArchive"] = INPUT_ARCHIVE if local_inputs else ""
     ph.update(job.template_vars)
     return ph
 
@@ -147,47 +149,59 @@ def insert_after_header(text, block):
     return "".join(lines[:i]) + block + "".join(lines[i:])
 
 
-def stagein_block(work_dir, archive=INPUT_ARCHIVE):
-    """POSIX sh: rank 0 extracts the input archive into work_dir; other ranks wait for it.
-
-    The script may run once (batch script, launcher null/single) or once per rank (launcher
-    srun/mpirun/...); the rank comes from the launcher's environment and defaults to 0.
-    Markers live in work_dir, which is on a shared filesystem. Other ranks give up after
-    $GLOBUSIRI_STAGEIN_TIMEOUT seconds (default 1800).
-    """
-    return f'''
-# --- globusiri stage-in (generated): rank 0 extracts the inputs, other ranks wait ---
-cd "{work_dir}" || exit 1
-GLOBUSIRI_RANK="${{SLURM_PROCID:-${{PMIX_RANK:-${{PMI_RANK:-${{PALS_RANKID:-${{OMPI_COMM_WORLD_RANK:-0}}}}}}}}}}"
-if [ "$GLOBUSIRI_RANK" = "0" ]; then
-    if [ ! -f "{STAGEIN_DONE}" ]; then
-        rm -f "{STAGEIN_FAILED}"
-        echo "[globusiri] rank 0: extracting {archive}"
-        if tar -xzf "{archive}"; then
-            touch "{STAGEIN_DONE}"
-        else
-            touch "{STAGEIN_FAILED}"
-            echo "[globusiri] rank 0: failed to extract {archive}" >&2
-            exit 1
+# Template snippet: rank 0 extracts the input archive, the other ranks wait for it.
+# The packaged templates contain a copy of it (tests check they stay identical). It uses only
+# {work_dir} and {inputArchive}; shell expansions are written as ${VAR-} (no ':'), so
+# str.format_map leaves them alone. POSIX sh, and safe under `set -euo pipefail`.
+STAGEIN_SNIPPET = """\
+# ---- input stage-in: rank 0 extracts the input archive, the other ranks wait ----
+# The script may run once (launcher null/single) or once per rank (launcher srun/mpirun);
+# the rank comes from the launcher's environment and is 0 if none is set. Other ranks give
+# up after $GLOBUSIRI_STAGEIN_TIMEOUT seconds (default 1800).
+GLOBUSIRI_ARCHIVE="{inputArchive}"
+if [ -n "$GLOBUSIRI_ARCHIVE" ]; then
+    cd "{work_dir}" || exit 1
+    GLOBUSIRI_RANK="${SLURM_PROCID-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${PMIX_RANK-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${PMI_RANK-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${PALS_RANKID-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${OMPI_COMM_WORLD_RANK-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK=0
+    if [ "$GLOBUSIRI_RANK" = "0" ]; then
+        if [ ! -f .globusiri_inputs.done ]; then
+            rm -f .globusiri_inputs.failed
+            echo "[globusiri] rank 0: extracting $GLOBUSIRI_ARCHIVE"
+            if tar -xzf "$GLOBUSIRI_ARCHIVE"; then
+                touch .globusiri_inputs.done
+            else
+                touch .globusiri_inputs.failed
+                echo "[globusiri] rank 0: failed to extract $GLOBUSIRI_ARCHIVE" >&2
+                exit 1
+            fi
         fi
+    else
+        GLOBUSIRI_WAITED=0
+        while [ ! -f .globusiri_inputs.done ]; do
+            if [ -f .globusiri_inputs.failed ]; then
+                echo "[globusiri] rank $GLOBUSIRI_RANK: rank 0 failed to extract $GLOBUSIRI_ARCHIVE" >&2
+                exit 1
+            fi
+            if [ "$GLOBUSIRI_WAITED" -ge "${GLOBUSIRI_STAGEIN_TIMEOUT-1800}" ]; then
+                echo "[globusiri] rank $GLOBUSIRI_RANK: timed out waiting for $GLOBUSIRI_ARCHIVE" >&2
+                exit 1
+            fi
+            sleep 2
+            GLOBUSIRI_WAITED=$((GLOBUSIRI_WAITED + 2))
+        done
     fi
-else
-    GLOBUSIRI_WAITED=0
-    while [ ! -f "{STAGEIN_DONE}" ]; do
-        if [ -f "{STAGEIN_FAILED}" ]; then
-            echo "[globusiri] rank $GLOBUSIRI_RANK: rank 0 failed to extract {archive}" >&2
-            exit 1
-        fi
-        if [ "$GLOBUSIRI_WAITED" -ge "${{GLOBUSIRI_STAGEIN_TIMEOUT:-1800}}" ]; then
-            echo "[globusiri] rank $GLOBUSIRI_RANK: timed out waiting for {archive}" >&2
-            exit 1
-        fi
-        sleep 2
-        GLOBUSIRI_WAITED=$((GLOBUSIRI_WAITED + 2))
-    done
 fi
-# --- end globusiri stage-in ---
-'''
+# ---- end input stage-in ----
+"""
+
+
+def stagein_block(work_dir, archive=INPUT_ARCHIVE):
+    """STAGEIN_SNIPPET rendered; inserted into templates that do not contain {inputArchive}."""
+    return "\n" + STAGEIN_SNIPPET.format_map(SafeDict(work_dir=work_dir, inputArchive=archive))
 
 
 def _check_input_name(name):
@@ -300,8 +314,12 @@ def prepare(config, job, site, run_id, run_dir):
     if not job.template_file:
         raise ConfigError("job has no template_file")
     archive = build_input_archive(local_inputs, run_dir / INPUT_ARCHIVE) if local_inputs else None
-    script = render_template(config.paths.find_template(job.template_file), ph, run_dir / EXECUTABLE,
-                             stagein=stagein_block(ph["work_dir"]) if archive else None)
+    template = config.paths.find_template(job.template_file)
+    # Templates extract the archive themselves via STAGEIN_SNIPPET ({inputArchive}); for any
+    # other template (e.g. perlmutter_iri_submit_template.sh) the block is inserted after its header.
+    handles_stagein = "{inputArchive}" in template.read_text(encoding="utf-8")
+    script = render_template(template, ph, run_dir / EXECUTABLE,
+                             stagein=stagein_block(ph["work_dir"]) if archive and not handles_stagein else None)
     spec = build_job_spec(job, site, ph)
     sub = Submission(run_id=run_id, site=site.name, remote_dir=ph["work_dir"], remote_log_dir=ph["remote_log_dir"],
                      stdout_path=ph["stdout_path"], stderr_path=ph["stderr_path"], script=str(script),

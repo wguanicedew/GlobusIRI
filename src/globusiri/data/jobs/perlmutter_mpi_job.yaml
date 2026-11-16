@@ -1,0 +1,38 @@
+# 4 processes per node on Perlmutter CPU nodes. No PanDA credentials or E2E transfers.
+# The job script runs once (launcher: null) and starts the ranks itself with srun.
+# It uses the generic shell_job_template.sh: perlmutter_iri_submit_template.sh is the
+# PanDA Harvester pilot template, not a standalone job script.
+#   globusiri submit --job perlmutter_mpi_job.yaml
+#   globusiri submit --job perlmutter_mpi_job.yaml --set resources.n_node=2   # 8 ranks
+# Each rank prints one line; the sorted lines are downloaded as runs/<run_id>/ranks.txt.
+# For a real MPI program, replace `bash -c '...'` with the executable (add it to `inputs`).
+site: NERSC_Perlmutter
+name: perlmutter-mpi
+template_file: shell_job_template.sh
+template_vars:
+  command: |
+    # GLOBUSIRI_* come from `resources` (see shell_job_template.sh).
+    srun --nodes="$GLOBUSIRI_NNODE" --ntasks-per-node="$GLOBUSIRI_NPROC_PER_NODE" \
+         --cpus-per-task="$GLOBUSIRI_NCORE_PER_PROC" --cpu-bind=cores \
+         bash -c 'echo "rank $SLURM_PROCID of $SLURM_NTASKS on $(hostname)"' | sort -n -k2 > ranks.txt
+    cat ranks.txt
+    test "$(wc -l < ranks.txt)" -eq "$GLOBUSIRI_NPROC"
+resources:
+  project: m2616
+  queue: debug
+  constraint: cpu
+  n_node: 1
+  n_core_per_node: 256        # Slurm CPUs: 128 cores x 2 hyperthreads; 256 / 4 = 64 per rank
+  n_process_per_node: 4
+  duration: 10m
+  launcher: null              # the script runs once; srun inside it starts the ranks
+inputs: {}
+staging:
+  e2e:
+    enabled: false
+  https_stageout:
+    stdout_stderr: true
+    files: [ranks.txt]
+cleanup:
+  remote_run_dir: false
+  e2e_stagein: false

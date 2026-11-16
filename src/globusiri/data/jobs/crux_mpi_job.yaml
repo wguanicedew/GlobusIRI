@@ -1,0 +1,48 @@
+# 4 processes per node on ALCF Crux (PBS). No PanDA credentials or E2E transfers.
+# The job script runs once (launcher: null) and starts the ranks itself with Cray PALS
+# mpiexec. Crux's IRI drops process_count/processes_per_node/cpu_cores_per_process, so PBS
+# only allocates the nodes; the rank layout is set here, by mpiexec.
+#   globusiri submit --job crux_mpi_job.yaml
+#   globusiri submit --job crux_mpi_job.yaml --set resources.n_node=2   # 8 ranks
+# Each rank prints one line; the sorted lines are downloaded as runs/<run_id>/ranks.txt.
+# For a real MPI program, replace `bash -c '...'` with the executable (add it to `inputs`).
+site: ALCF_CRUX
+name: crux-mpi
+template_file: shell_job_template.sh
+template_vars:
+  command: |
+    # mpiexec comes from the cray-pals module; load it if the batch environment lacks it.
+    if ! command -v mpiexec >/dev/null 2>&1; then
+        set +eu
+        . /etc/profile
+        [ -f /opt/cray/pe/lmod/lmod/init/profile ] && . /opt/cray/pe/lmod/lmod/init/profile
+        module load cray-pals
+        set -eu
+    fi
+    # GLOBUSIRI_* come from `resources` (see shell_job_template.sh).
+    mpiexec -n "$GLOBUSIRI_NPROC" --ppn "$GLOBUSIRI_NPROC_PER_NODE" \
+            --depth "$GLOBUSIRI_NCORE_PER_PROC" --cpu-bind depth \
+            bash -c 'echo "rank $PALS_RANKID (local $PALS_LOCAL_RANKID) on $(hostname)"' | sort -n -k2 > ranks.txt
+    cat ranks.txt
+    test "$(wc -l < ranks.txt)" -eq "$GLOBUSIRI_NPROC"
+resources:
+  project: ATLAS_workflow_ALCF
+  queue: debug
+  n_node: 1
+  n_core_per_node: 128        # physical cores (2 x 64); 128 / 4 = 32 per rank (mpiexec --depth)
+  n_process_per_node: 4
+  duration: 10m
+  launcher: null              # the script runs once; mpiexec inside it starts the ranks
+  custom_attributes:
+    filesystems: home:eagle
+    place: scatter
+inputs: {}
+staging:
+  e2e:
+    enabled: false
+  https_stageout:
+    stdout_stderr: true
+    files: [ranks.txt]
+cleanup:
+  remote_run_dir: false
+  e2e_stagein: false

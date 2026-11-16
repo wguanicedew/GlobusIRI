@@ -17,6 +17,49 @@ echo [$(date -u "+%m-%d-%y %H:%M:%S %Z")] Start_PBS_Job
 
 cd {work_dir}
 
+# ---- input stage-in: rank 0 extracts the input archive, the other ranks wait ----
+# The script may run once (launcher null/single) or once per rank (launcher srun/mpirun);
+# the rank comes from the launcher's environment and is 0 if none is set. Other ranks give
+# up after $GLOBUSIRI_STAGEIN_TIMEOUT seconds (default 1800).
+GLOBUSIRI_ARCHIVE="{inputArchive}"
+if [ -n "$GLOBUSIRI_ARCHIVE" ]; then
+    cd "{work_dir}" || exit 1
+    GLOBUSIRI_RANK="${SLURM_PROCID-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${PMIX_RANK-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${PMI_RANK-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${PALS_RANKID-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK="${OMPI_COMM_WORLD_RANK-}"
+    [ -n "$GLOBUSIRI_RANK" ] || GLOBUSIRI_RANK=0
+    if [ "$GLOBUSIRI_RANK" = "0" ]; then
+        if [ ! -f .globusiri_inputs.done ]; then
+            rm -f .globusiri_inputs.failed
+            echo "[globusiri] rank 0: extracting $GLOBUSIRI_ARCHIVE"
+            if tar -xzf "$GLOBUSIRI_ARCHIVE"; then
+                touch .globusiri_inputs.done
+            else
+                touch .globusiri_inputs.failed
+                echo "[globusiri] rank 0: failed to extract $GLOBUSIRI_ARCHIVE" >&2
+                exit 1
+            fi
+        fi
+    else
+        GLOBUSIRI_WAITED=0
+        while [ ! -f .globusiri_inputs.done ]; do
+            if [ -f .globusiri_inputs.failed ]; then
+                echo "[globusiri] rank $GLOBUSIRI_RANK: rank 0 failed to extract $GLOBUSIRI_ARCHIVE" >&2
+                exit 1
+            fi
+            if [ "$GLOBUSIRI_WAITED" -ge "${GLOBUSIRI_STAGEIN_TIMEOUT-1800}" ]; then
+                echo "[globusiri] rank $GLOBUSIRI_RANK: timed out waiting for $GLOBUSIRI_ARCHIVE" >&2
+                exit 1
+            fi
+            sleep 2
+            GLOBUSIRI_WAITED=$((GLOBUSIRI_WAITED + 2))
+        done
+    fi
+fi
+# ---- end input stage-in ----
+
 export PANDA_QUEUE={pandaQueueName}
 # export HARVESTER_DIR=/global/common/software/m2616/harvester-perlmutter/venv/py_3_13_11
 export HARVESTER_DIR=/lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/software/harvester/harvester-crux

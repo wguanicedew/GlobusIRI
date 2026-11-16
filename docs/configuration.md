@@ -182,7 +182,7 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 
 - **Examples.** `globusiri init` copies all packaged job examples into `<WORK_DIR>/jobs/`.
   The `*_example_job.yaml` files show PanDA settings; `*_hello_job.yaml` run simple shell
-  commands, `perlmutter_wordcount_job.yaml` uploads a local file, and
+  commands, `*_mpi_job.yaml` start 4 processes per node, `perlmutter_wordcount_job.yaml` uploads a local file, and
   `perlmutter_transfer_job.yaml` enables E2E stage-in and stage-out. See
   [examples.md](examples.md) for commands and required edits.
 - **Lookup.** `--job NAME` is used as a path if it exists. Otherwise it is looked up as
@@ -216,6 +216,7 @@ globusiri run        --job my_4node_job.yaml --set resources.duration=2h
 | `resources.signal`, `no_requeue`, `licenses`, `export`, `image`, `volume`, `pre_launch`, `post_launch` | Optional pass-through settings | same |
 | `inputs.<remote_name>` | Local file packed into the input archive and extracted as `<remote.work_dir>/<run_id>/<remote_name>` (see [Input archive](#input-archive)). Relative paths are resolved against WORK_DIR, and `${X509_USER_PROXY}` is allowed. Missing files are skipped | `pandaTokenFilename`, `pandaTokenKeyPath`, `x509UserProxy` |
 | `panda_auth_origin` | `{tokenOrigin}` placeholder | `pandaAuthOrigin` |
+| (derived) | `{inputArchive}`: `globusiri_inputs.tar.gz` if the job has inputs, else empty. See [Input archive](#input-archive) | — |
 | `staging.e2e.enabled` | Whether this job moves data with Globus E2E Transfer. If `false` (the default), the E2E steps are skipped and the E2E token is **not required or validated** for this job | preparator / stager configured or not |
 | `staging.e2e.stagein.manifest`, `.rucio`, `.files` | Transfer into the HPC before submission (e.g. input ROOT files). `files` is an inline list of `"SRC DST"` strings or `{src, dst}` maps; HPC-side paths are mount paths. The three sources are combined. Used only when `enabled` is true | preparator |
 | `staging.e2e.stageout.manifest`, `.rucio`, `.files` | Transfer out of the HPC after the job finished successfully. Same forms as stage-in. Used only when `enabled` is true | stager |
@@ -251,18 +252,26 @@ Every submission uploads at most two files to `<remote.work_dir>/<run_id>/`:
 2. `globusiri_inputs.tar.gz`: every file from `inputs`, stored under its `<remote_name>`. This file is
    only created if at least one input exists.
 
-If there is an archive, GlobusIRI inserts a generated stage-in block into `executable_batch`. It goes
-right after the template's leading `#!`, `#SBATCH`, `#PBS` and comment lines, before the first command:
+The job script extracts the archive. The packaged `shell_job_template.sh` and
+`crux_iri_submit_template.sh` contain a stage-in block, right after `cd {work_dir}`. The block
+is driven by the `{inputArchive}` placeholder, which is `globusiri_inputs.tar.gz` when the job has
+inputs and empty otherwise; when it is empty, the block does nothing:
 
 - The block works out the rank from `SLURM_PROCID`, `PMIX_RANK`, `PMI_RANK`, `PALS_RANKID` or
   `OMPI_COMM_WORLD_RANK`. If none of these is set, the rank is 0. This means the block works both
   when the scheduler runs the script once (`launcher: null` or `single`) and when it runs the script
   once per rank (`srun`, `mpirun`, ...).
-- Rank 0 runs `cd` into the run dir, extracts the archive, and then creates `.globusiri_inputs.done`.
+- Rank 0 extracts the archive in the run dir, and then creates `.globusiri_inputs.done`.
   If extraction fails, it creates `.globusiri_inputs.failed` and exits.
 - The other ranks wait until `.globusiri_inputs.done` appears and then continue. They exit
   immediately if `.globusiri_inputs.failed` appears. They also exit if they have waited
   `$GLOBUSIRI_STAGEIN_TIMEOUT` seconds (default 1800).
+
+To write your own template, copy the block from `shell_job_template.sh` (the
+`---- input stage-in ----` lines) and put it before the first command that reads an input. A
+template that never mentions `{inputArchive}`, such as the Harvester pilot template
+`perlmutter_iri_submit_template.sh`, still works: GlobusIRI inserts the same block after its
+leading `#!`, `#SBATCH`, `#PBS` and comment lines.
 
 The rest of the template therefore sees the inputs as plain files in the run dir. Placeholders such as
 `{pandaTokenFilename}` still resolve to the remote name.

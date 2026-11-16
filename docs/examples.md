@@ -51,6 +51,55 @@ until the runs finish. Results are saved as `runs/hello-pm-001/result.txt` and
 `runs/hello-crux-001/result.txt` under WORK_DIR. Use a new run ID for each submission, or
 omit `--run-id` to generate a unique ID. Job files can be reused without editing.
 
+## Several processes per node (MPI-style launch)
+
+[`perlmutter_mpi_job.yaml`](../src/globusiri/data/jobs/perlmutter_mpi_job.yaml) and
+[`crux_mpi_job.yaml`](../src/globusiri/data/jobs/crux_mpi_job.yaml) run 4 processes per node.
+Each process prints its rank and host. The sorted lines are downloaded as `ranks.txt`, and the job
+fails if a rank is missing.
+
+```bash
+globusiri submit --job perlmutter_mpi_job.yaml --run-id mpi-pm-001
+globusiri submit --job crux_mpi_job.yaml --run-id mpi-crux-001 --set resources.n_node=2   # 8 ranks
+globusiri monitor
+```
+
+Both use `launcher: null`. The IRI job script runs once on the first node, and the
+`command` starts the ranks itself:
+
+- **Perlmutter (Slurm):**
+  `srun --ntasks-per-node $GLOBUSIRI_NPROC_PER_NODE --cpus-per-task $GLOBUSIRI_NCORE_PER_PROC --cpu-bind=cores`.
+  `n_core_per_node: 256` counts Slurm CPUs (hyperthreads), so each rank gets 64.
+- **Crux (PBS):** Cray PALS
+  `mpiexec -n $GLOBUSIRI_NPROC --ppn $GLOBUSIRI_NPROC_PER_NODE --depth $GLOBUSIRI_NCORE_PER_PROC --cpu-bind depth`.
+  `n_core_per_node: 128` counts physical cores, so each rank gets 32. The `cray-pals` module is
+  loaded if `mpiexec` is not on `PATH`.
+
+`shell_job_template.sh` exports the `GLOBUSIRI_*` variables from `resources`:
+`GLOBUSIRI_NNODE`, `GLOBUSIRI_NPROC_PER_NODE`, `GLOBUSIRI_NPROC` (nodes × per node) and
+`GLOBUSIRI_NCORE_PER_PROC` (`n_core_per_node / n_process_per_node`). `--set
+resources.n_node=...` or `--set resources.n_process_per_node=...` therefore changes the launch
+without editing the command. For a real MPI program, add the executable to `inputs` and put it in
+place of `bash -c '...'`.
+
+These examples start the ranks inside the script, instead of using `launcher: srun` or `mpirun`, for three reasons:
+
+- Crux's IRI drops `process_count`, `processes_per_node` and `cpu_cores_per_process`
+  (`unsupported_resource_fields`). A launcher chosen through IRI would not know the rank layout.
+  Only the script's `mpiexec` can set it.
+- The site's own launcher and binding flags (PALS `--ppn/--depth/--cpu-bind`, Slurm
+  `--cpu-bind`) are used as written. They are not left to how the IRI service translates
+  `launcher`.
+- Setup such as module loads and input extraction runs once, before any rank starts.
+
+On Perlmutter, `launcher: srun` also works, because IRI passes the process counts to Slurm.
+In that case the whole script runs once per rank, and the stage-in block has rank 0 extract
+the inputs while the other ranks wait.
+
+The PanDA templates `perlmutter_iri_submit_template.sh` and `crux_iri_submit_template.sh` are
+Harvester pilot templates, not standalone job scripts. Use `shell_job_template.sh` (or your own
+template) for your own jobs.
+
 ## Upload a local input and retrieve an output
 
 [`perlmutter_wordcount_job.yaml`](../src/globusiri/data/jobs/perlmutter_wordcount_job.yaml)

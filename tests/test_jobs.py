@@ -103,16 +103,34 @@ def test_inputs_packed_into_one_archive(cfg, tmp_path, work):
         assert sorted(tar.getnames()) == ["pandaTokenFilename", "pandaTokenKeyPath"]
         assert tar.extractfile("pandaTokenFilename").read() == b"t"
     text = (tmp_path / "executable_batch").read_text()
-    # the stage-in block sits after the #PBS header and before the template's first command
-    assert text.index("#PBS -e") < text.index("globusiri stage-in") < text.index("export TZ=UTC0")
-    assert text.index("globusiri stage-in") < text.index('if [ -n "pandaTokenFilename" ]')
+    # the Crux template extracts the archive itself, before it looks at the input files
+    assert text.count("input stage-in: rank 0") == 1
+    assert text.index("cd /lus/eagle") < text.index('GLOBUSIRI_ARCHIVE="globusiri_inputs.tar.gz"')
+    assert text.index("GLOBUSIRI_ARCHIVE=") < text.index('if [ -n "pandaTokenFilename" ]')
+
+
+def test_stagein_inserted_into_template_without_it(cfg, tmp_path, work):
+    # perlmutter_iri_submit_template.sh (the Harvester pilot template) has no {inputArchive}
+    (work.inputs_dir / "panda_token").write_text("t")
+    job, site = resolve_job(cfg, "perlmutter_example_job.yaml", overrides=["inputs.x509UserProxy=null"])
+    jobs.prepare(cfg, job, site, "r8", tmp_path)
+    text = (tmp_path / "executable_batch").read_text()
+    assert text.count("input stage-in: rank 0") == 1
+    assert text.index("#SBATCH -e") < text.index("GLOBUSIRI_ARCHIVE=") < text.index("export TZ=UTC0")
+
+
+@pytest.mark.parametrize("template", ["shell_job_template.sh", "crux_iri_submit_template.sh"])
+def test_templates_carry_the_stagein_snippet(template):
+    from globusiri.paths import package_data_dir
+
+    assert jobs.STAGEIN_SNIPPET in (package_data_dir() / "templates" / template).read_text()
 
 
 def test_no_inputs_no_archive(cfg, tmp_path):
     job, site = resolve_job(cfg, "perlmutter_hello_job.yaml")
     sub, _ = jobs.prepare(cfg, job, site, "r5", tmp_path)
     assert sub.archive is None and not (tmp_path / jobs.INPUT_ARCHIVE).exists()
-    assert "globusiri stage-in" not in (tmp_path / "executable_batch").read_text()
+    assert 'GLOBUSIRI_ARCHIVE=""' in (tmp_path / "executable_batch").read_text()  # block is a no-op
 
 
 @pytest.mark.parametrize("name", ["/abs", "../x", "a//b", "executable_batch", "globusiri_inputs.tar.gz"])
@@ -183,6 +201,48 @@ def test_shell_examples_produce_documented_outputs(cfg, tmp_path, job_name, outp
     subprocess.run(["/bin/bash", str(script)], check=True, capture_output=True)
     assert (tmp_path / output).read_text().strip() == expected
 
+
+FAKE_LAUNCHER = """#!/bin/bash
+# fake srun/mpiexec: run the trailing `bash -c ...` once per rank
+while [ $# -gt 0 ] && [ "$1" != bash ]; do shift; done
+for r in $(seq 0 $((GLOBUSIRI_NPROC - 1))); do
+    SLURM_PROCID=$r SLURM_NTASKS=$GLOBUSIRI_NPROC PALS_RANKID=$r PALS_LOCAL_RANKID=$r "$@"
+done
+"""
+
+
+@pytest.mark.parametrize("job_name,launcher,n_node", [
+    ("perlmutter_mpi_job.yaml", "srun", 1), ("perlmutter_mpi_job.yaml", "srun", 2),
+    ("crux_mpi_job.yaml", "mpiexec", 1), ("crux_mpi_job.yaml", "mpiexec", 2),
+])
+def test_mpi_examples_start_four_ranks_per_node(cfg, tmp_path, job_name, launcher, n_node):
+    import os
+
+    job, site = resolve_job(cfg, job_name, overrides=[f"resources.n_node={n_node}"])
+    assert job.resources["launcher"] is None
+    ph = jobs.placeholders(job, site, "example", {})
+    ph["work_dir"] = str(tmp_path)
+    script = jobs.render_template(cfg.paths.find_template(job.template_file), ph, tmp_path / "job.sh")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / launcher).write_text(FAKE_LAUNCHER)
+    (bin_dir / launcher).chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "PMI", "PALS_", "OMPI_"))}
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    subprocess.run(["/bin/bash", str(script)], check=True, capture_output=True, env=env)
+    lines = (tmp_path / "ranks.txt").read_text().splitlines()
+    assert [line.split()[1] for line in lines] == [str(r) for r in range(4 * n_node)]
+
+
+def test_mpi_examples_job_spec(cfg, tmp_path):
+    job, site = resolve_job(cfg, "perlmutter_mpi_job.yaml")
+    spec = jobs.prepare(cfg, job, site, "m1", tmp_path)[0].job_spec
+    assert spec["resources"]["process_count"] == 4 and spec["resources"]["processes_per_node"] == 4
+    assert spec["resources"]["cpu_cores_per_process"] == 64 and "launcher" not in spec
+    job, site = resolve_job(cfg, "crux_mpi_job.yaml")
+    spec = jobs.prepare(cfg, job, site, "m2", tmp_path)[0].job_spec
+    assert spec["resources"] == {"node_count": 1, "exclusive_node_use": True}  # PBS: nodes only
+    assert 'export GLOBUSIRI_NPROC_PER_NODE=4' in (tmp_path / "executable_batch").read_text()
 
 @pytest.mark.parametrize("state,exit_code,expected", [
     ("new", None, jobs.SUBMITTED), ("queued", None, jobs.SUBMITTED), ("active", None, jobs.RUNNING),

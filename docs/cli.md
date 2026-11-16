@@ -163,6 +163,20 @@ The job file supplies the template, resources, and inputs (see
 `site`. `--set` overrides one key for this submission only, for example
 `--set resources.n_node=4 --set resources.duration=2h`. The job file itself is never modified.
 
+**`job submit` or `submit`?** Both render, upload and submit the same job file. They differ in
+what happens around that:
+
+| | `globusiri job submit` (this section) | `globusiri submit` ([workflow](#non-blocking-workflow-submit-monitor-daemon)) |
+|---|---|---|
+| Steps | upload and IRI submit only | validate, E2E stage-in, upload, submit, monitor, HTTPS/E2E stage-out, cleanup |
+| E2E stage-in/out, `https_stageout`, `cleanup` | ignored | done by later `monitor` / `daemon` passes |
+| Tracked by `monitor`, `daemon`, `runs` | no | yes |
+| `--dry-run` | yes: prints the script and `job_spec` | no |
+| Follow up with | `job status --wait`, `https stageout`, `job cleanup` | `monitor` or `daemon` |
+
+Use `submit` (or the blocking `run`) for real work. `job submit` is the low-level step, useful
+for `--dry-run` and for debugging a template.
+
 `job submit` does the following:
 
 1. Merges the site's `job_defaults`, the job file, and any `--set` values, then saves the result to `runs/<run_id>/job.yaml`.
