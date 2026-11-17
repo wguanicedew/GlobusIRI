@@ -1,3 +1,12 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Authors:
+# - Wen Guan, <wen.guan@cern.ch>, 2026
+
 """Workflow engine: validate -> [e2e stagein] -> upload -> submit -> monitor ->
 https download of stdout/stderr -> [e2e stageout] -> [cleanup].
 A transfer run (kind "transfer", from `globusiri e2e stagein/stageout`) has only

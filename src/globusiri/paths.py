@@ -1,3 +1,12 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Authors:
+# - Wen Guan, <wen.guan@cern.ch>, 2026
+
 """WORK_DIR resolution and the conventional locations of local files.
 
 WORK_DIR is ``$GLOBUSIRI_WORK_DIR`` if set, else the per-user globusiri data dir

@@ -1,3 +1,12 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Authors:
+# - Wen Guan, <wen.guan@cern.ch>, 2026
+
 """Shared HTTP helpers: retries with backoff, and access-token sources read from disk."""
 
 import logging

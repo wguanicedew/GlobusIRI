@@ -1,3 +1,12 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Authors:
+# - Wen Guan, <wen.guan@cern.ch>, 2026
+
 """Globus HTTPS client: PUT/GET files on one collection's https_server.
 
 Paths given to this client are HPC mount paths; they are translated to collection

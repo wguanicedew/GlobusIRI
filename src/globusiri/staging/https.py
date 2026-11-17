@@ -1,3 +1,12 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Authors:
+# - Wen Guan, <wen.guan@cern.ch>, 2026
+
 """Globus HTTPS staging. stagein = upload to the HPC, stageout = download from it.
 
 Remote paths are HPC mount paths; the client maps them through the site's https.path_map.

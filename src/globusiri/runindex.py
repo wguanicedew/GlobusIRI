@@ -1,3 +1,12 @@
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Authors:
+# - Wen Guan, <wen.guan@cern.ch>, 2026
+
 """Central bookkeeping of workflow runs: a relational index of runs/<run_id>/state.json.
 
 The database is SQLite (<WORK_DIR>/runs/index.db) by default, or MySQL/MariaDB when
