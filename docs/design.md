@@ -157,7 +157,7 @@ is also often read-only, for example in a root-owned venv or a shared software a
     e2e/refresh.yaml
     e2e/access.yaml                 #   client_id, access_token, expires_at, <label>_https
   logs/globusiri.log                # rotating CLI/library log (tokens redacted)
-  runs/index.db                    # SQLite summary index (derived from state.json)
+  runs/index.db                    # SQLite summary index (derived from state.json); or MySQL/MariaDB (database.url)
   runs/.index.lock                 # short lock for state/index publication and rebuilds
   runs/.daemon.lock                # at most one daemon for this WORK_DIR
   runs/<run_id>/                    # job.yaml (resolved snapshot), state.json, executable_batch, globusiri.log (this run only), stdout/stderr
@@ -542,9 +542,13 @@ survive a client restart because the job itself lives on the HPC.
 
 ### 5.5 Central index and concurrent processes
 
-`runs/index.db` holds a summary row per run: run ID, site, status, current step, job ID,
-timestamps, and last error. `RunState.save()` writes the full state with atomic file
-replacement and upserts the summary in a SQLite transaction, under `runs/.index.lock`.
+`runs/index.db` (or the MySQL/MariaDB database of `database.url`) holds a summary row per
+run: run ID, site, status, current step, job ID, timestamps, and last error. The tables are
+SQLAlchemy models (`globusiri/orm/models.py`: `globusiri_runs`, `globusiri_meta`); every row
+carries a namespace, so one server database can hold several WORK_DIRs. `RunState.save()`
+writes the full state with atomic file replacement and upserts the summary in a database
+transaction, under `runs/.index.lock`. With SQLite every write takes that lock, so there is
+one writer at a time; reads take no lock (WAL).
 The lock is held only for local bookkeeping; it never covers remote API requests.
 Initialization and rebuilds use the same lock, so a rebuild cannot overwrite newer state.
 Competing creations of the same run ID are serialized by the per-run lock.
@@ -554,7 +558,8 @@ never scan run directories. A missing index triggers a one-time import of
 `runs/*/state.json`; `globusiri runs --reindex` rebuilds it explicitly. The table printed by
 `runs` uses only index rows; JSON and full API results load the selected states.
 
-SQLite uses WAL and WORK_DIR must be on a local filesystem with reliable POSIX locks.
+SQLite uses WAL and WORK_DIR must be on a local filesystem with reliable POSIX locks. A server
+database relies on its transactions; the local lock still orders JSON and row publication.
 Concurrent submitters, monitor callers, and reindexing can share it. A process killed
 between replacing JSON and committing the database can leave a stale index; rebuild from
 the authoritative JSON to recover. This does not provide exactly-once remote submission:

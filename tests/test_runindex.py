@@ -11,6 +11,8 @@ import pytest
 from globusiri.runindex import RunIndex
 from globusiri.secure_io import write_json_private
 
+# The suite also runs against MySQL/MariaDB when $GLOBUSIRI_DATABASE_URL is set (see CI).
+
 
 def test_import_and_rebuild(tmp_path, monkeypatch):
     root = tmp_path / "runs"
@@ -19,9 +21,10 @@ def test_import_and_rebuild(tmp_path, monkeypatch):
     write_json_private(root / "bad" / "state.json", [])
     index = RunIndex(root)
     assert index.query(status="active")[0]["run_id"] == "old"
-    assert index.path.stat().st_mode & 0o777 == 0o600
-    with sqlite3.connect(index.path) as con:
-        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    if index.path:  # SQLite
+        assert index.path.stat().st_mode & 0o777 == 0o600
+        with sqlite3.connect(index.path) as con:
+            assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
     data["status"] = "finished"
     write_json_private(root / "old" / "state.json", data)
@@ -109,8 +112,9 @@ else:
     for row in index.query():
         data = json.loads((work.run_dir(row["run_id"]) / "state.json").read_text())
         assert data["status"] == row["status"] == "finished"
-    with sqlite3.connect(index.path) as con:
-        assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    if index.path:  # SQLite
+        with sqlite3.connect(index.path) as con:
+            assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
 def test_cli_index_listing_and_reindex(cfg, capsys, monkeypatch):

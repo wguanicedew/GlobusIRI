@@ -52,3 +52,9 @@ class JobFailed(GlobusIriError):
 
 class ValidationFailed(GlobusIriError):
     exit_code = EXIT_VALIDATION
+
+
+class DatabaseError(GlobusIriError):
+    """The run index database (SQLite or MySQL/MariaDB) failed or cannot be reached."""
+
+    exit_code = EXIT_ERROR

@@ -122,7 +122,8 @@ while the logs and outputs are being staged out after the batch job ends, and be
 `g.monitor()` without IDs checks all active runs in WORK_DIR, including runs created by
 other processes. `g.monitor([])` checks none. New submissions are found on the next pass.
 Multiple monitor callers and submitters can share WORK_DIR: a locked run is reported as
-`busy`, while the other runs continue. The SQLite index discovers active runs without
+`busy`, while the other runs continue. The index (SQLite, or MySQL/MariaDB with
+[`database.url`](configuration.md#database)) discovers active runs without
 scanning completed run directories. `g.runs(summary=True)` reads the index alone, and
 `g.runs(reindex=True)` rebuilds it from saved states. Use a local filesystem with POSIX
 locks and SQLite WAL support; see [CLI bookkeeping](cli.md#non-blocking-workflow-submit-monitor-daemon).

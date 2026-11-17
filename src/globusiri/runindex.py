@@ -1,63 +1,45 @@
-"""Central bookkeeping of workflow runs: <WORK_DIR>/runs/index.db (SQLite).
+"""Central bookkeeping of workflow runs: a relational index of runs/<run_id>/state.json.
 
-Each run's full record stays in runs/<run_id>/state.json. The index holds one summary row
-per run, written by RunState.save() every time that file is written, so:
+The database is SQLite (<WORK_DIR>/runs/index.db) by default, or MySQL/MariaDB when
+sites.yaml sets ``database.url`` (see orm/__init__.py). Each run's full record stays in
+runs/<run_id>/state.json. The index holds one summary row per run, written by
+RunState.save() every time that file is written, so:
 
 * `monitor` / `daemon` find the active runs with one query instead of reading every
   state.json (finished runs cost nothing);
 * `runs` lists runs from the index alone.
 
-The index is derived data. If it is missing it is rebuilt by scanning runs/*/state.json
-once, and `globusiri runs --reindex` rebuilds it on demand (e.g. after copying runs in).
+The index is derived data. The first use of a namespace imports runs/*/state.json once,
+and `globusiri runs --reindex` rebuilds it on demand (e.g. after copying runs in).
 
-An index lock serializes initialization, state publication, and rebuilds. SQLite
-transactions protect index updates; state.json is replaced atomically. Keep WORK_DIR
-on a local filesystem with working POSIX locks and SQLite WAL support.
+Writes (state publication, initialization, rebuilds) hold an exclusive lock on
+runs/.index.lock: with SQLite it makes this process the only writer; with every backend it
+keeps a rebuild from reading old JSON and overwriting a newer row. Reads take no lock
+(SQLite runs in WAL mode). Keep WORK_DIR on a local filesystem with working POSIX locks.
 """
 
-import fcntl
 import json
 import logging
-from contextlib import closing, contextmanager
-
-try:
-    import sqlite3
-except ImportError:  # Python built without _sqlite3 (missing SQLite headers at build time)
-    try:
-        from pysqlite3 import dbapi2 as sqlite3
-    except ImportError:
-        raise ImportError(
-            "globusiri needs SQLite, but this Python was built without the _sqlite3 module. "
-            "Either install the SQLite dev package (libsqlite3-dev / sqlite-devel) and rebuild Python, "
-            "or run: pip install 'globusiri[sqlite]'  (installs pysqlite3-binary)") from None
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
+
+from .errors import DatabaseError
+from .orm import DatabaseConfig
+from .orm.models import COLUMNS, Meta, Run, register_models
+from .orm.session import get_engine, session_scope, write_lock
 from .secure_io import write_json_private
 
 log = logging.getLogger("globusiri.runindex")
 
 INDEX_NAME = "index.db"
+INITIALIZED = "initialized"
 
-COLUMNS = ("run_id", "site", "status", "current_step", "step_status", "step_state", "job_id", "created_at",
-           "updated_at", "finished_at", "message")
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    run_id       TEXT PRIMARY KEY,
-    site         TEXT,
-    status       TEXT,          -- active | finished | failed | cancelled | NULL (made by `job submit`)
-    current_step TEXT,
-    step_status  TEXT,
-    step_state   TEXT,          -- IRI job state while monitoring
-    job_id       TEXT,
-    created_at   TEXT,
-    updated_at   TEXT,
-    finished_at  TEXT,
-    message      TEXT           -- last_error while active, final message otherwise
-);
-CREATE INDEX IF NOT EXISTS runs_status ON runs (status, created_at);
-CREATE INDEX IF NOT EXISTS runs_site ON runs (site, created_at);
-"""
+# (url, namespace, pid) whose tables exist and whose namespace was imported
+_READY = set()
 
 
 def summary(data):
@@ -84,33 +66,74 @@ def summary(data):
     }
 
 
+def _text(value):
+    return None if value is None else str(value)
+
+
+def _upsert(session, namespace, data):
+    row = {k: _text(v) for k, v in summary(data).items()}
+    row["namespace"] = namespace
+    updates = [c for c in COLUMNS if c != "run_id"]
+    table = Run.__table__
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+        stmt = insert(table).values(**row)
+        stmt = stmt.on_conflict_do_update(index_elements=["namespace", "run_id"],
+                                          set_={c: stmt.excluded[c] for c in updates})
+    elif dialect in ("mysql", "mariadb"):
+        from sqlalchemy.dialects.mysql import insert
+        stmt = insert(table).values(**row)
+        stmt = stmt.on_duplicate_key_update(**{c: stmt.inserted[c] for c in updates})
+    elif dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+        stmt = insert(table).values(**row)
+        stmt = stmt.on_conflict_do_update(index_elements=["namespace", "run_id"],
+                                          set_={c: stmt.excluded[c] for c in updates})
+    else:
+        session.merge(Run(**row))
+        return
+    session.execute(stmt)
+
+
 class RunIndex:
-    def __init__(self, runs_dir):
+    def __init__(self, runs_dir, database=None):
         self.runs_dir = Path(runs_dir)
-        self.path = self.runs_dir / INDEX_NAME
+        self.db = database if database is not None else DatabaseConfig(None, self.runs_dir)
+        self.namespace = self.db.namespace
+        self.path = self.db.sqlite_path  # the SQLite file; None for a server database
 
-    @contextmanager
-    def _db(self):
-        self.runs_dir.mkdir(parents=True, exist_ok=True)
-        # Hold this only for local bookkeeping, never for remote API calls. In
-        # particular, a rebuild cannot read old JSON and overwrite a newer row.
-        with open(self.runs_dir / ".index.lock", "a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            with closing(sqlite3.connect(str(self.path), timeout=30)) as con:
-                con.row_factory = sqlite3.Row
+    @property
+    def engine(self):
+        return get_engine(self.db.url, self.db.options)
+
+    # ------------------------------------------------------------------ setup
+    def _ready(self):
+        """Create the tables and import the existing runs of this namespace, once.
+
+        Never call it while holding write_lock (the lock is not re-entrant)."""
+        key = (self.db.url, self.namespace, os.getpid())
+        if key in _READY and (self.path is None or self.path.exists()):
+            return
+        with write_lock(self.runs_dir):
+            try:
+                try:
+                    register_models(self.engine)
+                except SQLAlchemyError:
+                    register_models(self.engine)  # another host created the tables meanwhile
+            except SQLAlchemyError as exc:
+                raise DatabaseError(f"run index database {self.db.display}: {exc}") from exc
+            if self.path is not None:
                 self.path.chmod(0o600)
-                if con.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
-                    con.execute("PRAGMA journal_mode=WAL")
-                con.executescript(_SCHEMA)
-                with con:
-                    # Persist initialization inside the same transaction as the
-                    # import, so interrupted initialization is retried next time.
-                    if con.execute("PRAGMA user_version").fetchone()[0] == 0:
-                        self._scan_into(con)
-                        con.execute("PRAGMA user_version=1")
-                    yield con
+            with session_scope(self.engine) as s:
+                # The import and its marker commit together: an interrupted import is retried.
+                if s.get(Meta, (self.namespace, INITIALIZED)) is None:
+                    self._scan_into(s)
+                    s.merge(Meta(namespace=self.namespace, key=INITIALIZED,
+                                 value=datetime.now(timezone.utc).isoformat(timespec="seconds")))
+        _READY.add(key)
 
-    def _scan_into(self, con):
+    def _scan_into(self, session):
         n = 0
         for state_file in self.runs_dir.glob("*/state.json"):
             try:
@@ -121,70 +144,72 @@ class RunIndex:
                 log.warning("index: skip %s: %s", state_file, exc)
                 continue
             data.setdefault("run_id", state_file.parent.name)
-            self._upsert(con, data)
+            _upsert(session, self.namespace, data)
             n += 1
         if n:
-            log.info("index: added %d existing runs to %s", n, self.path)
+            log.info("index: added %d existing runs to %s", n, self.db.display)
         return n
 
-    @staticmethod
-    def _upsert(con, data):
-        row = summary(data)
-        cols = ", ".join(COLUMNS)
-        marks = ", ".join(f":{c}" for c in COLUMNS)
-        updates = ", ".join(f"{c}=excluded.{c}" for c in COLUMNS if c != "run_id")
-        con.execute(f"INSERT INTO runs ({cols}) VALUES ({marks}) ON CONFLICT(run_id) DO UPDATE SET {updates}", row)
-
-    # ------------------------------------------------------------------ public
+    # ------------------------------------------------------------------ writes
     def save(self, data):
-        """Publish complete state and its summary under the same bookkeeping lock.
+        """Publish complete state and its summary under the write lock.
 
-        JSON is authoritative. A process killed between the file replacement and
-        SQLite commit can leave an old index row; rebuild() repairs that gap.
+        JSON is authoritative. A process killed between the file replacement and the
+        database commit can leave an old index row; rebuild() repairs that gap.
         """
-        with self._db() as con:
+        self._ready()
+        with write_lock(self.runs_dir), session_scope(self.engine) as s:
             write_json_private(self.runs_dir / data["run_id"] / "state.json", data)
-            self._upsert(con, data)
+            _upsert(s, self.namespace, data)
 
     def upsert(self, data):
-        with self._db() as con:
-            self._upsert(con, data)
-
-    def query(self, *, status=None, site=None, limit=None, oldest_first=False):
-        """Summary rows (dicts), newest first unless oldest_first. status may be a list."""
-        where, args = [], []
-        if status:
-            statuses = [status] if isinstance(status, str) else list(status)
-            where.append(f"status IN ({', '.join('?' * len(statuses))})")
-            args += statuses
-        if site:
-            where.append("site = ?")
-            args.append(site)
-        sql = "SELECT * FROM runs"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += f" ORDER BY created_at {'ASC' if oldest_first else 'DESC'}, run_id"
-        if limit:
-            sql += " LIMIT ?"
-            args.append(int(limit))
-        with self._db() as con:
-            return [dict(r) for r in con.execute(sql, args)]
-
-    def get(self, run_id):
-        with self._db() as con:
-            r = con.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
-            return dict(r) if r else None
-
-    def counts(self):
-        with self._db() as con:
-            return {r["status"]: r["n"] for r in con.execute("SELECT status, COUNT(*) AS n FROM runs GROUP BY status")}
+        self._ready()
+        with write_lock(self.runs_dir), session_scope(self.engine) as s:
+            _upsert(s, self.namespace, data)
 
     def remove(self, run_id):
-        with self._db() as con:
-            con.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        self._ready()
+        with write_lock(self.runs_dir), session_scope(self.engine) as s:
+            s.execute(delete(Run).where(Run.namespace == self.namespace, Run.run_id == run_id))
 
     def rebuild(self):
         """Re-read runs/*/state.json in one transaction. Returns the number of runs."""
-        with self._db() as con:
-            con.execute("DELETE FROM runs")
-            return self._scan_into(con)
+        self._ready()
+        with write_lock(self.runs_dir), session_scope(self.engine) as s:
+            s.execute(delete(Run).where(Run.namespace == self.namespace))
+            return self._scan_into(s)
+
+    # ------------------------------------------------------------------ reads
+    def query(self, *, status=None, site=None, limit=None, oldest_first=False):
+        """Summary rows (dicts), newest first unless oldest_first. status may be a list."""
+        self._ready()
+        stmt = select(Run).where(Run.namespace == self.namespace)
+        if status:
+            statuses = [status] if isinstance(status, str) else list(status)
+            stmt = stmt.where(Run.status.in_(statuses))
+        if site:
+            stmt = stmt.where(Run.site == site)
+        order = Run.created_at.asc() if oldest_first else Run.created_at.desc()
+        stmt = stmt.order_by(order, Run.run_id)
+        if limit:
+            stmt = stmt.limit(int(limit))
+        with session_scope(self.engine) as s:
+            return [self._row(r) for r in s.scalars(stmt)]
+
+    def get(self, run_id):
+        self._ready()
+        with session_scope(self.engine) as s:
+            r = s.get(Run, (self.namespace, run_id))
+            return self._row(r) if r else None
+
+    def counts(self):
+        self._ready()
+        stmt = (select(Run.status, func.count()).where(Run.namespace == self.namespace)
+                .group_by(Run.status))
+        with session_scope(self.engine) as s:
+            return {status: n for status, n in s.execute(stmt)}
+
+    @staticmethod
+    def _row(run):
+        d = run.to_dict()
+        return {c: d.get(c) for c in COLUMNS}

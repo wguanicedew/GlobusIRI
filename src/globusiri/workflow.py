@@ -80,8 +80,11 @@ class RunBusy(Exception):
 
 
 class RunState:
-    def __init__(self, run_dir, data=None):
+    def __init__(self, run_dir, data=None, *, index=None):
         self.run_dir = run_dir
+        # where save() publishes the summary row; config.run_index() (the default SQLite
+        # index of this runs directory when not given)
+        self.index = index
         self.path = run_dir / "state.json"
         self.data = data or {"steps": {s: {"status": "pending"} for s in STEPS}}
 
@@ -103,7 +106,7 @@ class RunState:
     def save(self):
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.data["updated_at"] = _now()
-        RunIndex(self.run_dir.parent).save(self.data)
+        (self.index or RunIndex(self.run_dir.parent)).save(self.data)
 
     def step(self, name):
         return self.data["steps"].setdefault(name, {"status": "pending"})
@@ -226,7 +229,7 @@ def create(config, job, site, *, run_id=None, do_validate=True, stagein_manifest
             raise ConfigError(f"run {run_id} already exists; continue it with `globusiri monitor {run_id}`, "
                                   f"or retry a failed run with `globusiri submit --resume {run_id}`")
         log.info("run %s: created at %s (job %s)", run_id, site.name, job.source or job.name)
-        state = RunState(run_dir)
+        state = RunState(run_dir, index=config.run_index())
         state.data.update({"run_id": run_id, "site": site.name, "status": ACTIVE, "current_step": STEPS[0],
                            "created_at": _now(),
                            "options": {"validate": bool(do_validate), "max_attempts": int(max_attempts)}})
@@ -282,6 +285,7 @@ def load(config, run_id):
     """(RunState, Job, Site) of an existing run."""
     run_dir = config.paths.run_dir(run_id)
     state = RunState.load(run_dir)
+    state.index = config.run_index()
     snap = yaml.safe_load((run_dir / "job.yaml").read_text())
     job, site = resolve_job(config, snapshot_data=snap)
     return state, job, site
@@ -601,7 +605,7 @@ def advance(config, run_id, *, echo=None, raise_errors=False, wait_lock=False):
 def list_runs(config, *, status=None):
     """Load only the runs selected by the central index, newest first."""
     out = []
-    for row in RunIndex(config.paths.runs_dir).query(status=status):
+    for row in config.run_index().query(status=status):
         try:
             st = RunState.load(config.paths.run_dir(row["run_id"]))
         except (OSError, ValueError, ConfigError):
@@ -618,7 +622,7 @@ def monitor(config, run_ids=None, *, echo=None):
     single run. Returns {run_id: RunState or error string}."""
     echo = echo or (lambda *a: None)
     ids = list(run_ids) if run_ids is not None else [
-        r["run_id"] for r in RunIndex(config.paths.runs_dir).query(status=ACTIVE, oldest_first=True)]
+        r["run_id"] for r in config.run_index().query(status=ACTIVE, oldest_first=True)]
     out = {}
     for rid in ids:
         try:

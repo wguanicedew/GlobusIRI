@@ -424,7 +424,8 @@ after that query are picked up on the next pass. Use `daemon` for continuous mon
 invoke `monitor` from a host program or cron. `job submit` is a lower-level command whose
 runs are not advanced by this monitor; use `submit` for the full workflow.
 
-**Bookkeeping.** `<WORK_DIR>/runs/index.db` is a central SQLite summary index. Each run also
+**Bookkeeping.** `<WORK_DIR>/runs/index.db` is a central SQLite summary index; set
+[`database.url`](configuration.md#database) to keep it in MySQL/MariaDB instead. Each run also
 has `state.json` (full progress), `job.yaml` (resolved job), and `.lock` under
 `runs/<run_id>/`. Normal monitoring queries `status = active` in the index and reads only
 those runs, without scanning WORK_DIR or completed runs. When the index is missing, it is
@@ -434,14 +435,14 @@ run directories or to repair an out-of-date summary after an interrupted save.
 **Concurrency.** A per-run `flock` prevents two processes from advancing the same run at
 once; another monitor reports it as `busy` and continues with other runs. Creation also
 locks the run so competing `submit --run-id` calls cannot overwrite it. A brief
-`runs/.index.lock` serializes state publication, index initialization, and reindexing;
-SQLite transactions commit index changes together, and atomic file replacement keeps
+`runs/.index.lock` serializes state publication, index initialization, and reindexing (with
+SQLite, every write: one writer at a time); database transactions commit index changes together, and atomic file replacement keeps
 `state.json` readable. Remote calls happen outside the index lock. Multiple monitors and
 submitters can therefore share this bookkeeping; only a second `daemon` is refused.
 
 Keep WORK_DIR on a local filesystem with reliable POSIX locks and SQLite WAL support;
-network filesystems such as NFS are unsuitable for this WAL-based index. A process killed
-between replacing JSON and committing SQLite may leave the index stale: the JSON remains
+network filesystems such as NFS are unsuitable for the WAL-based SQLite index. A process killed
+between replacing JSON and committing the index may leave the index stale: the JSON remains
 the recovery source for `runs --reindex`. Locks prevent concurrent duplicate launches, but
 an IRI submission accepted remotely with a lost response can still be submitted again by
 a retry (see [design.md](design.md#51a-execution-modes)).

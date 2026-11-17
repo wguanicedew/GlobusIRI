@@ -26,13 +26,13 @@ that directory. See [design.md §2.2](design.md#22-work_dir).
 | Logs | `<WORK_DIR>/logs/globusiri.log` (all runs) |
 | Run logs | `<WORK_DIR>/runs/<run_id>/globusiri.log`, or the job file's `log` (one run only) |
 | Runs | `<WORK_DIR>/runs/<run_id>/` (state, rendered script, stdout/stderr) |
-| Run index | `<WORK_DIR>/runs/index.db` (SQLite summaries for discovery and listings) |
+| Run index | `<WORK_DIR>/runs/index.db` (SQLite summaries for discovery and listings), or MySQL/MariaDB with [`database`](#database) |
 | Templates | `<WORK_DIR>/templates/<name>`, else packaged `globusiri/data/templates/<name>` |
 
 To see the resolved locations, run `globusiri paths`.
 
 All submitters and monitors for the same set of jobs must share WORK_DIR. Use a local
-filesystem with POSIX file locks and SQLite WAL support. Active runs are found through
+filesystem with POSIX file locks (and SQLite WAL support for the default index). Active runs are found through
 the index, without a directory scan; missing indexes are imported from saved run state.
 `globusiri runs --reindex` rebuilds the index on demand. See
 [CLI bookkeeping and concurrency](cli.md#non-blocking-workflow-submit-monitor-daemon).
@@ -63,6 +63,7 @@ token_files:
 |---|---|
 | `defaults` | Values inherited by every site (see below) |
 | `e2e` | The Globus Transfer token and endpoint catalog, shared by all sites |
+| `database` | Optional. Where the run index lives: SQLite (default) or MySQL/MariaDB (see below) |
 | `sites.<NAME>` | One block per HPC target. `NAME` is the CLI argument, for example `NERSC_Perlmutter`. Fixed per site; per-job settings go in [job files](#job-files) |
 
 ### `defaults`
@@ -72,6 +73,36 @@ token_files:
 | `globus_client_id` | `165ae151-86aa-430a-8251-ce565e51998f` | Native app client used for HTTPS and E2E logins |
 | `refresh_min_lifetime` | `0` | `refresh` skips the refresh if the token outlives this |
 | `retries` | `3` | Retries on connection errors and HTTP 429/5xx |
+
+## `database`
+
+The run index summarizes every `submit`/`run`/`e2e` run for `monitor`, `daemon` and `runs`.
+It is SQLite at `<WORK_DIR>/runs/index.db` unless `database.url` points to a MySQL or
+MariaDB server, such as the Harvester database. Full run states stay in
+`<WORK_DIR>/runs/<run_id>/state.json` with either backend.
+
+```yaml
+database:
+  url: mysql+pymysql://harvester:${GLOBUSIRI_DB_PASSWORD}@dbhost:3306/harvester
+  namespace: harvester-prod
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `url` | `sqlite:///<WORK_DIR>/runs/index.db` | SQLAlchemy URL. `mysql+pymysql://USER:PASSWORD@HOST[:PORT]/DB` needs `pip install 'globusiri[mysql]'`; `mysql+mysqldb://` uses mysqlclient. `$GLOBUSIRI_DATABASE_URL` overrides it. Put the password in an environment variable (`${VAR}` is expanded) |
+| `namespace` | SQLite: `default`; server: the WORK_DIR `runs` path | Rows that belong to this WORK_DIR. Several WORK_DIRs can share one database; each queries and rebuilds only its own namespace. Hosts sharing one WORK_DIR over a shared filesystem must use the same namespace (set it explicitly if the mount paths differ). At most 191 characters |
+| `pool_recycle` | `3600` | MySQL only: seconds before a pooled connection is replaced |
+| `pool_size`, `max_overflow`, `pool_timeout` | SQLAlchemy defaults | MySQL only: connection pool settings |
+
+GlobusIRI creates its two tables, `globusiri_runs` and `globusiri_meta`, if they are missing.
+It never touches other tables, so it can share the Harvester schema. The database user needs
+`CREATE`, `SELECT`, `INSERT`, `UPDATE` and `DELETE` on them. The index is derived data: the
+first use of a namespace imports `runs/*/state.json`, and `globusiri runs --reindex`
+rebuilds it. `globusiri paths` shows the database in use, with the password hidden.
+
+Writes take the lock `<WORK_DIR>/runs/.index.lock`. With SQLite, only one process (or thread)
+writes at a time, and readers take no lock because the file is in WAL mode. With MySQL, the
+server handles concurrency, and the lock orders each `state.json` write with its row.
 
 ## `e2e`
 

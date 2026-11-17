@@ -15,6 +15,7 @@ The CLI (`globusiri.cli`) is a thin layer that parses arguments, calls these met
 formats the results.
 """
 
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -29,7 +30,6 @@ from .config import load_config, parse_duration
 from .errors import ConfigError, GlobusIriError, JobFailed, ValidationFailed
 from .jobfile import resolve_job
 from .paths import Paths, package_data_dir, work_dir_source
-from .runindex import RunIndex
 from .runlog import run_log_path, run_logging
 from .staging import e2e as e2e_staging
 from .staging import https as https_staging
@@ -132,6 +132,25 @@ class GlobusIRI:
         return self.config.site(name)
 
     # ------------------------------------------------------------------ paths
+    def _run_index_row(self):
+        """("run index", database, source); the password of a server URL is hidden."""
+        from .orm import ENV_URL, DatabaseConfig
+        try:
+            db = self.config.database
+        except Exception:  # noqa: BLE001 - paths works before init and with a broken config
+            try:
+                db = DatabaseConfig(None, self.paths.runs_dir)
+            except Exception as exc:  # noqa: BLE001
+                return ("run index", f"<{exc}>", ENV_URL)
+        if os.environ.get(ENV_URL):
+            source = ENV_URL
+        elif db.backend == "sqlite" and db.sqlite_path == (self.paths.runs_dir / "index.db").resolve():
+            source = "WORK_DIR"
+        else:
+            source = "sites.yaml database.url"
+        where = db.sqlite_path or f"{db.display} (namespace {db.namespace})"
+        return ("run index", where, source)
+
     def paths_info(self):
         """Resolved locations as [(what, path, source)]; never fails on a bad config."""
         root, source = work_dir_source()
@@ -144,7 +163,7 @@ class GlobusIRI:
             ("tokens", self.paths.tokens_dir, "WORK_DIR"),
             ("logs", self.paths.log_file, "WORK_DIR"),
             ("runs", self.paths.runs_dir, "WORK_DIR"),
-            ("run index", self.paths.runs_dir / "index.db", "WORK_DIR"),
+            self._run_index_row(),
             ("jobs", self.paths.jobs_dir, "WORK_DIR"),
             ("templates", f"{self.paths.templates_dir}, then {package_data_dir() / 'templates'}", "WORK_DIR, package"),
         ]
@@ -297,7 +316,7 @@ class GlobusIRI:
                 raise exc
         run_dir = cfg.paths.run_dir(run_id)
         with run_logging(run_log_path(cfg, run_id, job_obj), run_id):
-            state = workflow.RunState(run_dir)
+            state = workflow.RunState(run_dir, index=cfg.run_index())
             state.data.update({"run_id": run_id, "site": site_obj.name, "created_at": workflow._now()})
             sub, _ = jobs.prepare(cfg, job_obj, site_obj, run_id, run_dir)
             iri = services.iri_client(cfg, site_obj)
@@ -598,7 +617,7 @@ class GlobusIRI:
         """State dicts of the runs under WORK_DIR/runs, newest first. status: "active",
         "finished", "failed", "cancelled", or a list of them. summary=True returns
         index rows only; reindex=True rebuilds the index from state.json first."""
-        index = RunIndex(self.config.paths.runs_dir)
+        index = self.config.run_index()
         if reindex:
             index.rebuild()
         if summary:

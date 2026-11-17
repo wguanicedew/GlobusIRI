@@ -31,6 +31,18 @@ defaults:
   retries: 3
 
 # --------------------------------------------------------------------------
+# Run index (bookkeeping of submit/monitor runs). Default: the SQLite file
+# <WORK_DIR>/runs/index.db, nothing to configure. To use MySQL/MariaDB instead (e.g. the
+# Harvester database), set database.url (pip install 'globusiri[mysql]' for PyMySQL).
+# $GLOBUSIRI_DATABASE_URL overrides database.url. Full run states stay in
+# <WORK_DIR>/runs/<run_id>/state.json either way.
+# --------------------------------------------------------------------------
+# database:
+#   url: mysql+pymysql://harvester:${GLOBUSIRI_DB_PASSWORD}@dbhost:3306/harvester
+#   namespace: harvester-prod    # rows of this WORK_DIR; default: the WORK_DIR runs path
+#   pool_recycle: 3600           # seconds; also pool_size, max_overflow, pool_timeout
+
+# --------------------------------------------------------------------------
 # Globus E2E (Transfer) token + endpoints: shared by all sites
 # tokens: <WORK_DIR>/tokens/e2e/{refresh,access}.yaml
 # --------------------------------------------------------------------------

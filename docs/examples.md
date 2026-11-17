@@ -305,6 +305,24 @@ The index is created from saved states when missing; `globusiri runs --reindex` 
 after importing runs or recovering an interrupted update. Use local storage with POSIX
 locks and SQLite WAL support. See the [concurrency details](cli.md#non-blocking-workflow-submit-monitor-daemon).
 
+To keep the index in MySQL/MariaDB, for example next to Harvester, install the driver and
+point `sites.yaml` at the server; nothing else changes:
+
+```bash
+pip install 'globusiri[mysql]'
+export GLOBUSIRI_DB_PASSWORD=...
+```
+
+```yaml
+# <WORK_DIR>/config/sites.yaml
+database:
+  url: mysql+pymysql://harvester:${GLOBUSIRI_DB_PASSWORD}@dbhost:3306/harvester
+```
+
+`globusiri paths` shows the database in use (password hidden). The first `monitor` or `runs`
+creates the `globusiri_runs` and `globusiri_meta` tables and imports the existing runs of
+this WORK_DIR. See [`database`](configuration.md#database).
+
 ## PanDA pilot jobs
 
 The original [`perlmutter_example_job.yaml`](../src/globusiri/data/jobs/perlmutter_example_job.yaml)

@@ -53,10 +53,13 @@ globusiri monitor                 # one pass over all active runs, then exits
 globusiri daemon --interval 60    # continuous monitoring
 ```
 
-Bookkeeping uses `<WORK_DIR>/runs/index.db` (SQLite), with full state in
+Bookkeeping uses `<WORK_DIR>/runs/index.db` (SQLite) by default, or MySQL/MariaDB (for
+example the Harvester database) with `database.url` in `sites.yaml`
+([configuration](docs/configuration.md#database)). Full state is in
 `runs/<run_id>/state.json`. Normal monitoring queries active runs in the index; it does not
-scan the working directory. Concurrent submitters and monitors share file locks and SQLite
-transactions. Use a local filesystem with POSIX locking and SQLite WAL support. The index
+scan the working directory. Concurrent submitters and monitors share file locks and database
+transactions; with SQLite only one process writes at a time. Use a local filesystem with
+POSIX locking and SQLite WAL support. The index
 is rebuilt from saved states when missing, or with `globusiri runs --reindex`.
 
 See [job examples](docs/examples.md) for setup, file uploads, E2E transfers, and running many

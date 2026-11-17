@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from .errors import ConfigError
+from .orm import DatabaseConfig
 from .paths import Paths
 
 DEFAULT_GLOBUS_CLIENT_ID = "165ae151-86aa-430a-8251-ce565e51998f"  # USATLAS_HPC_Globus
@@ -233,6 +234,8 @@ class Config:
         self.retries = int(defaults.get("retries", 3))
         self.e2e = E2EConfig(raw.get("e2e"))
         self.token_files = raw.get("token_files") or {}
+        # run index: SQLite under WORK_DIR by default, or MySQL/MariaDB (database.url)
+        self.database = DatabaseConfig(raw.get("database"), self.paths.runs_dir)
         sites = raw.get("sites") or {}
         if not isinstance(sites, dict):
             raise ConfigError("'sites' must be a mapping")
@@ -255,6 +258,10 @@ class Config:
         """Token file path, honouring an optional ``token_files`` override."""
         override = self.token_files.get(key)
         return self.paths.resolve(override) if override else Path(default)
+
+    def run_index(self):
+        from .runindex import RunIndex
+        return RunIndex(self.paths.runs_dir, self.database)
 
     def facilities(self):
         return sorted({s.facility for s in self.sites.values()})
