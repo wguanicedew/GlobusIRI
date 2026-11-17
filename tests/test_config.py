@@ -110,3 +110,23 @@ def test_iri_sfapi_retry_settings(work):
     raw["sites"]["NERSC_Perlmutter"]["iri"]["sfapi_retries"] = 0
     with pytest.raises(ConfigError, match="sfapi_retries must be >= 1"):
         Config(raw, paths=work)
+
+
+def test_iri_and_https_retry_settings(work):
+    import yaml
+
+    from globusiri import services
+
+    raw = yaml.safe_load(work.default_config.read_text())
+    site_raw = raw["sites"]["NERSC_Perlmutter"]
+    site_raw["iri"].update(retries=4, retry_sleep="30s")
+    site_raw["https"].update(retries=5, retry_sleep="1m")
+    cfg = Config(raw, paths=work)
+    site = cfg.site("NERSC_Perlmutter")
+    iri = services.iri_client(cfg, site)
+    https = services.https_client(cfg, site)
+    assert (iri.retry_attempts, iri.retry_sleep) == (4, 30)
+    assert (https.retry_attempts, https.retry_sleep) == (5, 60)
+    site_raw["https"]["retries"] = 0
+    with pytest.raises(ConfigError, match="https.retries must be >= 1"):
+        Config(raw, paths=work)

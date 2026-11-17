@@ -364,7 +364,7 @@ globusiri submit [SITE] --job JOB_FILE [--set key=value]... [--input NAME=LOCAL]
 globusiri submit --resume RUN_ID [--no-validate] [--json]
 globusiri monitor [RUN_ID...] [--resume] [--json]
 globusiri daemon [--interval 60] [--once]
-globusiri runs [RUN_ID] [--status active|finished|failed|cancelled] [--reindex] [--json]
+globusiri runs [RUN_ID] [--status active|finished|failed|cancelled|upload_failed|download_failed] [--reindex] [--json]
 globusiri cancel RUN_ID
 ```
 
@@ -406,8 +406,31 @@ or a token file briefly missing during a refresh, is recorded as `last_error`. T
 retried on the next pass. After `--max-attempts` failed passes in a row, the run fails. The
 `monitor` step is the exception: once the IRI job exists, failed status queries are retried without
 limit, so a facility API outage never leaves a running job untracked; use `cancel` to stop such a
-run. A failed log
-download is recorded on the step and does not fail the run.
+run.
+
+**Upload and download failures.** HTTPS and IRI calls are already retried by the client
+(`https.retries`, `iri.retries` in [sites.yaml](configuration.md)). When they still fail, the run
+ends in one of two statuses that mark which files are missing:
+
+| Status | Meaning | What `globusiri monitor RUN_ID` does |
+|---|---|---|
+| `upload_failed` | The job script or inputs could not be uploaded after `--max-attempts` passes. Nothing was submitted | Uploads again; on success it submits the job and the run continues as usual |
+| `download_failed` | The IRI job finished, but some of its files (stdout/stderr, `https_stageout.files`) could not be downloaded. The failed files are listed in the run's `message` | Downloads only the failed files again (files already here are kept); then cleanup runs if the job file enables it, and the run becomes `finished` |
+
+`monitor` without run IDs and `daemon` skip these runs, so a missing file is not retried
+forever. Retry a run by naming it, once the cause is fixed or after waiting:
+
+```bash
+globusiri runs --status download_failed          # which runs are missing files
+globusiri monitor 20261117-100957-d231ec         # download the missing files again
+```
+
+The run's other steps still run: E2E stage-out goes on after a failed download. Cleanup waits
+until the downloads succeed, so the remote files are kept for the retry. If the IRI job itself
+failed, the run is `failed` as before; a failed log download is recorded on the step.
+`plugin_status` reports `upload_failed` as `failed` (nothing ran) and `download_failed` as
+`finished` (the job ran to the end). `submit`, `monitor` and `run` exit with code 6 for both
+statuses.
 
 **Retrying a failed run.** `globusiri submit --resume RUN_ID` and `globusiri monitor --resume
 RUN_ID...` reopen a failed run without blocking. The run becomes `active`, its failed steps go

@@ -464,8 +464,11 @@ three modes:
 | Daemon | `globusiri submit`, then `globusiri daemon` (or `g.daemon()`) | the daemon, every `--interval` seconds |
 | Blocking | `globusiri run` / `g.run()` | `run`, in a loop until the run ends |
 
-A run's `status` is `active`, `finished`, `failed`, or `cancelled`. `monitor()` picks up only
-`active` runs. A step error that cannot be fixed by retrying (failed transfer, failed
+A run's `status` is `active`, `finished`, `failed`, `cancelled`, `upload_failed`, or
+`download_failed`. `monitor()` picks up only `active` runs. The last two mean the run stopped
+because files could not be uploaded (nothing was submitted) or downloaded (the job finished).
+A run named explicitly, as in `monitor(["RUN_ID"])` or `globusiri monitor RUN_ID`, redoes only
+that step and then continues (`workflow.RETRYABLE`). A step error that cannot be fixed by retrying (failed transfer, failed
 validation, config error) fails the run. Any other error is recorded as `last_error`, and the
 step is retried on the next pass, up to `max_attempts` passes in a row. A per-run `flock` on
 `runs/<run_id>/.lock` lets several callers share a WORK_DIR (a daemon, a plugin, the CLI)
@@ -670,7 +673,21 @@ errors and HTTP 429/5xx. A 4xx is never retried. IRI async filesystem tasks keep
 `Unable to get sfapi data: 403`, which arrives as an HTTP error (often 403 or 404) or as the
 result of a failed task. The whole IRI call (request and task) is sent again after
 3 seconds, and it fails with `SfapiUnavailable` (a `RemoteError`, not `LoginRequired`) only
-after 3 attempts in a row get it (site settings `iri.sfapi_retry_sleep`, `iri.sfapi_retries`). This applies to every IRI call, including job submission:
+after 3 attempts in a row get it (site settings `iri.sfapi_retry_sleep`, `iri.sfapi_retries`).
+
+Other failed calls get a slower retry on top of the quick resends. They include any HTTP
+error, a failed IRI task, or an HTTPS 404 for a file that the collection does not see yet
+just after the job ends. The call is tried again after `retry_sleep` (default 10 s), up to
+`retries` attempts (default 3), set per site under `iri:` and `https:`. Some answers are
+final and never retried:
+
+- IRI HTTP 404 and "No such file or directory", since cleanup treats a missing path as
+  already removed;
+- HTTP 501;
+- 401/403 token errors.
+
+IRI job submission is retried only on the sfapi error, because an accepted job whose reply
+was lost would otherwise be submitted twice. This applies to every IRI call, including job submission:
 the error means NERSC did not get as far as acting on the request.
 
 ## 10. Security

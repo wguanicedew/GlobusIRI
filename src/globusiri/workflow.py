@@ -53,7 +53,16 @@ def steps_of(state):
 
 # run status
 ACTIVE, FINISHED, FAILED, CANCELLED = "active", "finished", "failed", "cancelled"
-RUN_TERMINAL = (FINISHED, FAILED, CANCELLED)
+# The run stopped because files could not be moved over HTTPS/IRI, after the client's own
+# retries; the rest of the run is fine. `globusiri monitor RUN_ID` (the run named
+# explicitly) redoes only that step, then the run carries on:
+#   upload_failed:   the job's inputs/script could not be uploaded, so nothing was submitted;
+#   download_failed: the IRI job finished, but files (logs, outputs) could not be downloaded.
+# A monitor pass over all active runs and the daemon leave them alone.
+UPLOAD_FAILED, DOWNLOAD_FAILED = "upload_failed", "download_failed"
+RETRYABLE = {UPLOAD_FAILED: "upload", DOWNLOAD_FAILED: "https_stageout"}
+RUN_TERMINAL = (FINISHED, FAILED, CANCELLED, UPLOAD_FAILED, DOWNLOAD_FAILED)
+RUN_STATUSES = (ACTIVE, *RUN_TERMINAL)
 
 # step status that lets the run move on
 STEP_PASSED = ("done", "skipped")
@@ -450,8 +459,12 @@ def _step_https_stageout(ctx):
     else:
         remote_dir = _submission(ctx).remote_dir
         res = https_staging.stageout(ctx.https, [posixpath.join(remote_dir, f) for f in files], ctx.state.run_dir)
+    # files downloaded by an earlier pass stay "skipped" (already here) on a retry
+    previous = ctx.state.step("https_stageout").get("files") or {}
+    res = {k: (previous[k] if v == "skipped" and k in previous and not str(previous[k]).startswith("error") else v)
+           for k, v in res.items()}
     errors = {k: v for k, v in res.items() if str(v).startswith("error")}
-    # a failed log download does not fail the run; it is recorded and the run moves on
+    # failed downloads do not stop the run: later steps go on, and the run ends download_failed
     ctx.state.set("https_stageout", "done" if not errors else "failed", files=res)
     for remote, local in res.items():
         ctx.echo(f"  download {remote} -> {local}")
@@ -563,7 +576,11 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
             log.warning("run %s step %s attempt %d/%s: %s", state.run_id, name, attempts, limit, exc)
             if raise_errors or (not unlimited and attempts >= max_attempts):
                 state.set(name, "failed", error=str(exc))
-                state.finish(FAILED, f"{name}: {exc} (after {attempts} attempts)")
+                if name == "upload":
+                    state.finish(UPLOAD_FAILED, f"upload: {exc} (after {attempts} attempts); "
+                                                f"retry with: globusiri monitor {state.run_id}")
+                else:
+                    state.finish(FAILED, f"{name}: {exc} (after {attempts} attempts)")
                 if raise_errors:
                     raise
             echo(f"  {name}: error (attempt {attempts}/{limit}): {exc}")
@@ -573,7 +590,13 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
         echo(f"run {state.run_id} finished")
         return state
     final = _final(ctx)
-    if final == jobs.FINISHED:
+    if final == jobs.FINISHED and state.step("https_stageout").get("status") == "failed":
+        bad = [r for r, v in (state.step("https_stageout").get("files") or {}).items() if str(v).startswith("error")]
+        state.finish(DOWNLOAD_FAILED, f"job finished, but {len(bad)} download(s) failed: {', '.join(bad)}; "
+                                      f"retry with: globusiri monitor {state.run_id}")
+        echo(f"run {state.run_id} {DOWNLOAD_FAILED}: {len(bad)} file(s) not downloaded; "
+             f"retry with: globusiri monitor {state.run_id}")
+    elif final == jobs.FINISHED:
         state.finish(FINISHED)
         echo(f"run {state.run_id} finished")
     else:
@@ -582,13 +605,14 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
     return state
 
 
-def advance(config, run_id, *, echo=None, raise_errors=False, wait_lock=False):
+def advance(config, run_id, *, echo=None, raise_errors=False, wait_lock=False, retry_transfers=False):
     """One non-blocking pass over a run: check the current step and trigger the next ones.
 
     Returns the RunState. Raises RunBusy if another process is advancing this run (unless
     wait_lock). With raise_errors, a step error is re-raised after it is recorded
     (blocking mode); otherwise errors are recorded in state.json and transient ones are
-    retried on the next pass (plugin and daemon modes).
+    retried on the next pass (plugin and daemon modes). With retry_transfers, a run that
+    ended upload_failed or download_failed redoes that step first (see RETRYABLE).
     """
     echo = echo or (lambda *a: None)
     run_dir = config.paths.run_dir(run_id)
@@ -596,10 +620,33 @@ def advance(config, run_id, *, echo=None, raise_errors=False, wait_lock=False):
         state, job, site = load(config, run_id)
         if not state.status:  # a run made by `job submit`, which the engine does not drive
             raise ConfigError(f"run {run_id} was not created by `globusiri submit` or `run`")
+        if retry_transfers and state.status in RETRYABLE:
+            _reopen_transfer(state, echo)
         if state.status in RUN_TERMINAL:
             return state
         with run_logging(run_log_path(config, run_id, job), run_id):
             return _advance_locked(config, state, job, site, echo=echo, raise_errors=raise_errors)
+
+
+def _reopen_transfer(state, echo):
+    """upload_failed / download_failed -> active, with the failed step (and a cleanup that was
+    skipped because of it) pending again. Done files are kept: a download retry fetches only
+    the files that failed."""
+    step = RETRYABLE[state.status]
+    log.info("run %s: %s; retrying %s", state.run_id, state.status, step)
+    echo(f"  {state.run_id}: {state.status}; retrying {step}")
+    st = state.step(step)
+    for k in ("attempts", "error"):
+        st.pop(k, None)
+    st["status"] = "pending"
+    cleanup = state.step("cleanup")
+    if cleanup.get("status") == "skipped" and "not done" in str(cleanup.get("reason")):
+        cleanup.pop("reason", None)
+        cleanup["status"] = "pending"
+    state.data["status"] = ACTIVE
+    for k in ("finished_at", "message", "last_error"):
+        state.data.pop(k, None)
+    state.save()
 
 
 def list_runs(config, *, status=None):
@@ -619,14 +666,16 @@ def list_runs(config, *, status=None):
 def monitor(config, run_ids=None, *, echo=None):
     """One pass over the given runs (default: every active run). Each run is checked and
     its next steps triggered; a run held by another process is skipped. Never raises for a
-    single run. Returns {run_id: RunState or error string}."""
+    single run. Runs given by ID that ended upload_failed/download_failed redo that step.
+    Returns {run_id: RunState or error string}."""
     echo = echo or (lambda *a: None)
-    ids = list(run_ids) if run_ids is not None else [
+    explicit = run_ids is not None  # runs named by the caller: upload/download_failed are retried
+    ids = list(run_ids) if explicit else [
         r["run_id"] for r in config.run_index().query(status=ACTIVE, oldest_first=True)]
     out = {}
     for rid in ids:
         try:
-            out[rid] = advance(config, rid, echo=echo)
+            out[rid] = advance(config, rid, echo=echo, retry_transfers=explicit)
         except RunBusy:
             out[rid] = "busy (another process is advancing it)"
         except Exception as exc:  # keep going with the other runs
@@ -710,6 +759,10 @@ def plugin_status(state_data):
     status = state_data.get("status")
     if status in (FINISHED, FAILED, CANCELLED):
         return status
+    if status == UPLOAD_FAILED:  # nothing ran
+        return FAILED
+    if status == DOWNLOAD_FAILED:  # the job ran to the end; only some files are missing locally
+        return FINISHED
     if state_data.get("kind") == TRANSFER:
         return "running"
     mon = (state_data.get("steps") or {}).get("monitor") or {}
@@ -739,8 +792,8 @@ def run(config, job, site, *, run_id=None, no_wait=False, do_validate=True, stag
         if state.status == ACTIVE:
             echo(f"  not waiting; continue with: globusiri monitor {run_id}")
         return state
-    if state.status == FAILED:
-        raise JobFailed(state.data.get("message") or f"run {run_id} failed")
+    if state.status in (FAILED, UPLOAD_FAILED, DOWNLOAD_FAILED):
+        raise JobFailed(state.data.get("message") or f"run {run_id} {state.status}")
     return state
 
 
@@ -763,6 +816,10 @@ def reopen(config, run_id, *, do_validate=None):
                 for k in ("task_ids", "e2e_task_ids", "attempts", "error", "tasks"):
                     st.pop(k, None)
                 st["status"] = "pending"
+        cleanup = state.data["steps"].get("cleanup") or {}
+        if cleanup.get("status") == "skipped" and "not done" in str(cleanup.get("reason")):
+            cleanup.pop("reason", None)
+            cleanup["status"] = "pending"
         state.save()
     log.info("run %s reopened", run_id)
     return state, job, site

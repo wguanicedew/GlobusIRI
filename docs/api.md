@@ -113,6 +113,8 @@ for run_id, r in g.monitor([f"worker-{w}" for w in worker_ids]).items():
     if isinstance(r, str):          # busy, or could not be read; try again next cycle
         continue
     status = r["plugin_status"]     # submitted | running | finished | failed | cancelled
+    # r["status"] may also be upload_failed (plugin_status failed) or download_failed
+    # (plugin_status finished); g.monitor([run_id]) redoes that upload/download
 ```
 
 `plugin_status` uses the same strings as Harvester's `WorkSpec.ST_*`. It stays `running`

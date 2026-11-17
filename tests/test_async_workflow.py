@@ -312,3 +312,65 @@ def test_rucio_deterministic_job_reaches_globus_once(env):
     (src, dst), = gl.submitted[0][2]
     assert src == "/dcint-door003/usatlas.bnl.gov/atlasdatadisk/x/fileA"
     assert dst == "/global/cfs/cdirs/m2616/harvester_workdir/rucio/user/wguan/cb/6a/fileA"
+
+
+def test_download_failed_then_monitor_retries_only_missing_files(env, monkeypatch):
+    from globusiri.errors import RemoteError
+
+    g, iri, gl = env
+    https = services.https_client(None, None)
+    real_get, missing = https.get, {"result.txt"}
+
+    def get(remote, local):
+        if remote.rsplit("/", 1)[-1] in missing:
+            raise RemoteError(f"HTTPS GET {remote}: HTTP 404: No such file or directory")
+        real_get(remote, local)
+
+    https.get = get
+    r = g.submit("perlmutter_hello_job.yaml", run_id="D1", validate=False,
+                 set=["staging.https_stageout={stdout_stderr: true, files: [result.txt]}",
+                      "cleanup.remote_run_dir=true"])
+    iri.states = ["completed"]
+    r = g.monitor(["D1"])["D1"]
+    assert r["status"] == workflow.DOWNLOAD_FAILED and r["plugin_status"] == "finished"
+    assert "result.txt" in r["message"] and "globusiri monitor D1" in r["message"]
+    assert r["steps"]["https_stageout"]["status"] == "failed"
+    assert r["steps"]["cleanup"]["status"] == "skipped"          # files kept until downloads work
+    assert g.monitor() == {}                                      # passes over active runs skip it
+    assert g.runs(status=workflow.DOWNLOAD_FAILED)[0]["run_id"] == "D1"
+
+    fetched = len(https.gets)
+    missing.clear()
+    r = g.monitor(["D1"])["D1"]                                   # named explicitly: retried
+    assert r["status"] == "finished", r.get("message")
+    assert https.gets[fetched:] == [p for p in r["steps"]["https_stageout"]["files"] if p.endswith("result.txt")]
+    assert not any(str(v).startswith("error") for v in r["steps"]["https_stageout"]["files"].values())
+    assert r["steps"]["cleanup"]["status"] == "done"
+
+
+def test_upload_failed_then_monitor_retries_upload(env):
+    from globusiri.errors import RemoteError
+
+    g, iri, gl = env
+    https = services.https_client(None, None)
+    real_put, broken = https.put, {"on": True}
+
+    def put(local, remote):
+        if broken["on"]:
+            raise RemoteError("HTTPS PUT: HTTP 500: GlobusError")
+        real_put(local, remote)
+
+    https.put = put
+    r = g.submit("perlmutter_hello_job.yaml", run_id="U1", validate=False, max_attempts=2)
+    assert r["status"] == "active" and r["steps"]["upload"].get("attempts") == 1
+    r = g.monitor()["U1"]
+    assert r["status"] == workflow.UPLOAD_FAILED and r["plugin_status"] == "failed"
+    assert r["steps"]["submit"]["status"] == "pending"
+    assert not any(c[0] == "launch" for c in iri.calls)
+    assert g.monitor() == {}
+
+    broken["on"] = False
+    r = g.monitor(["U1"])["U1"]
+    assert r["status"] == "active" and r["steps"]["upload"]["status"] == "done"
+    assert r["steps"]["submit"]["status"] == "done"
+    assert any(c[0] == "launch" for c in iri.calls)

@@ -104,6 +104,10 @@ sites:
       # sfapi_retry_sleep, and fails after sfapi_retries attempts in a row
       sfapi_retries: 3
       sfapi_retry_sleep: 3s
+      # any other failed IRI call (except 404/501 answers and job submission): attempts in
+      # all, and the wait between them
+      retries: 3
+      retry_sleep: 10s
 
     remote:
       work_dir: /global/cfs/cdirs/m2616/harvester_workdir
@@ -128,6 +132,10 @@ sites:
       collection_pick: 0
       collection_id: null               # optional pin; skips the search
       panda_secret_key: NERSC_HTTPS_TOKEN
+      # a failed HTTPS download/upload (e.g. 404 for a file the collection does not see yet,
+      # a transient GlobusError): attempts in all, and the wait between them
+      retries: 3
+      retry_sleep: 10s
       session_domains: [nersc.gov]       # `https login` asks for a login per domain first
       path_map: {}                      # Globus path == Perlmutter mount path
 
@@ -174,6 +182,10 @@ sites:
       collection_pick: 0
       collection_id: null
       panda_secret_key: ALCF_CRUX_HTTPS_TOKEN
+      # a failed HTTPS download/upload (e.g. 404 for a file the collection does not see yet,
+      # a transient GlobusError): attempts in all, and the wait between them
+      retries: 3
+      retry_sleep: 10s
       session_domains: [alcf.anl.gov]
       path_map:
         /lus/eagle/projects: /          # .../IRI_workdir/jobs -> /ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs

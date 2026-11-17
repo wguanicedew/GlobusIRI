@@ -8,6 +8,16 @@ NERSC's IRI sometimes fails a call with "Unable to get sfapi data: 403" (as the 
 or as the result of the call's failed task), and the same call works moments later. Such a
 call is sent again after `sfapi_retry_sleep` seconds; it fails (SfapiUnavailable) only when
 `sfapi_retries` attempts in a row get the error.
+
+Other failed calls (an HTTP error after the quick retries, or a failed task) are sent again
+after `retry_sleep` seconds, up to `retry_attempts` attempts in all, except:
+
+* definite answers, which another attempt would only repeat: HTTP 404 and "No such file or
+  directory" (a missing path; cleanup relies on it), and HTTP 501 (not implemented);
+* job submission, where a lost reply may hide an accepted job: retrying could start the job
+  twice (the workflow's submit step has its own attempts, and a job is never duplicated
+  by the client);
+* 401/403 token problems (LoginRequired).
 """
 
 import json
@@ -36,13 +46,19 @@ def _is_sfapi(detail):
     return SFAPI_ERROR in str(detail)
 
 
+def _retryable(exc):
+    """A RemoteError worth another attempt (see the module docstring)."""
+    return exc.status not in (404, 501) and "No such file or directory" not in str(exc)
+
+
 def _encode(segment):
     return quote(str(segment), safe="")
 
 
 class IriClient:
     def __init__(self, base_url, token_source, *, resource_id=None, retries=3, debug=False,
-                 task_poll_interval=5, task_max_polls=60, sfapi_retries=3, sfapi_retry_sleep=3):
+                 task_poll_interval=5, task_max_polls=60, sfapi_retries=3, sfapi_retry_sleep=3,
+                 retry_attempts=3, retry_sleep=3):
         self.base_url = base_url.rstrip("/")
         self.token_source = token_source
         self.resource_id = resource_id
@@ -52,6 +68,8 @@ class IriClient:
         self.task_max_polls = task_max_polls
         self.sfapi_retries = max(1, int(sfapi_retries))
         self.sfapi_retry_sleep = sfapi_retry_sleep
+        self.retry_attempts = max(1, int(retry_attempts))
+        self.retry_sleep = retry_sleep
         self.session = requests.Session()
         self.session.headers["Accept"] = "application/json"
 
@@ -115,20 +133,36 @@ class IriClient:
                 time.sleep(self.task_poll_interval)
         raise RemoteError(f"IRI {what}: task {task_id} not finished after {self.task_max_polls} polls")
 
-    def _call(self, what, send):
-        """send() (one request, and its task), sent again while it fails with SfapiUnavailable."""
-        for attempt in range(1, self.sfapi_retries + 1):
+    def _call(self, what, send, *, retry_errors=True):
+        """send() (one request, and its task), sent again while it fails with SfapiUnavailable
+        (sfapi_retries/sfapi_retry_sleep) or, if retry_errors, another retryable RemoteError
+        (retry_attempts/retry_sleep). The two are counted separately."""
+        sfapi_n = other_n = 0
+        while True:
             try:
                 return send()
             except SfapiUnavailable as exc:
-                if attempt >= self.sfapi_retries:
-                    raise SfapiUnavailable(f"{exc} (failed {attempt} times in a row)", status=exc.status) from None
+                sfapi_n += 1
+                if sfapi_n >= self.sfapi_retries:
+                    raise SfapiUnavailable(f"{exc} (failed {sfapi_n} times in a row)", status=exc.status) from None
                 log.warning("IRI %s: '%s' (attempt %d/%d); retrying in %ss",
-                            what, SFAPI_ERROR, attempt, self.sfapi_retries, self.sfapi_retry_sleep)
+                            what, SFAPI_ERROR, sfapi_n, self.sfapi_retries, self.sfapi_retry_sleep)
                 time.sleep(self.sfapi_retry_sleep)
+            except RemoteError as exc:
+                if not retry_errors or not _retryable(exc):
+                    raise
+                other_n += 1
+                if other_n >= self.retry_attempts:
+                    if self.retry_attempts > 1:
+                        raise RemoteError(f"{exc} (failed {other_n} times)", status=exc.status) from None
+                    raise
+                log.warning("IRI %s failed (attempt %d/%d): %s; retrying in %ss", what, other_n,
+                            self.retry_attempts, str(exc).splitlines()[0][:200], self.retry_sleep)
+                time.sleep(self.retry_sleep)
 
-    def _api(self, method, url, what, **kw):
-        return self._call(what, lambda: self._json(self._request(method, url, **kw), what))
+    def _api(self, method, url, what, *, retry_errors=True, **kw):
+        return self._call(what, lambda: self._json(self._request(method, url, **kw), what),
+                          retry_errors=retry_errors)
 
     def get_url(self, url, what="GET"):
         """GET an arbitrary IRI URL (used for token validation). Returns the response."""
@@ -137,7 +171,8 @@ class IriClient:
     # ------------------------------------------------------------------ compute
     def launch_job(self, job_spec, *, resource_id=None):
         url = f"{self.base_url}/api/v1/compute/job/{_encode(self._rid(resource_id))}"
-        return self._api("POST", url, "submit job", json_body=job_spec)
+        # sfapi errors only: another error may hide a job that was accepted
+        return self._api("POST", url, "submit job", json_body=job_spec, retry_errors=False)
 
     def get_job(self, job_id, *, resource_id=None):
         url = f"{self.base_url}/api/v1/compute/status/{_encode(self._rid(resource_id))}/{_encode(job_id)}"

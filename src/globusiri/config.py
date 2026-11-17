@@ -173,6 +173,15 @@ class Site:
                               "sfapi_retry_sleep a duration (e.g. 3, 3s, 1m)") from None
         if self.iri_sfapi_retries < 1 or self.iri_sfapi_retry_sleep < 0:
             raise ConfigError(f"sites.{name}.iri.sfapi_retries must be >= 1 and sfapi_retry_sleep >= 0")
+        # other failed IRI calls: attempts, and the wait between them
+        try:
+            self.iri_retries = int(iri.get("retries", 3))
+            self.iri_retry_sleep = parse_duration(iri.get("retry_sleep"), 10)
+        except (TypeError, ValueError):
+            raise ConfigError(f"sites.{name}.iri.retries must be an integer and "
+                              "retry_sleep a duration (e.g. 10, 10s, 1m)") from None
+        if self.iri_retries < 1 or self.iri_retry_sleep < 0:
+            raise ConfigError(f"sites.{name}.iri.retries must be >= 1 and retry_sleep >= 0")
 
         remote = raw.get("remote") or {}
         self.work_dir = remote.get("work_dir")
@@ -203,6 +212,15 @@ class Site:
         self.https_panda_secret_key = https.get("panda_secret_key")
         self.https_path_map = PathMap(https.get("path_map"))
         self.https_session_domains = str_list(https.get("session_domains"))
+        # a failed HTTPS GET/PUT (e.g. 404 for a file not visible yet): attempts, and the wait between them
+        try:
+            self.https_retries = int(https.get("retries", 3))
+            self.https_retry_sleep = parse_duration(https.get("retry_sleep"), 10)
+        except (TypeError, ValueError):
+            raise ConfigError(f"sites.{name}.https.retries must be an integer and "
+                              "retry_sleep a duration (e.g. 10, 10s, 1m)") from None
+        if self.https_retries < 1 or self.https_retry_sleep < 0:
+            raise ConfigError(f"sites.{name}.https.retries must be >= 1 and retry_sleep >= 0")
 
         e2e = raw.get("e2e") or {}
         self.e2e = e2e

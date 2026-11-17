@@ -70,6 +70,15 @@ already done are kept, so a job that was already submitted is not submitted agai
 `globusiri run --resume RUN_ID` resumes a run and waits for it to finish. See
 [cli.md](cli.md#non-blocking-workflow-submit-monitor-daemon).
 
+A run whose files could not be moved ends `upload_failed` (nothing submitted) or
+`download_failed` (the job finished, but some files are missing locally). Name it to `monitor`,
+without `--resume`, to redo just that transfer:
+
+```bash
+globusiri runs --status download_failed
+globusiri monitor 20261117-100957-d231ec   # downloads only the files that failed
+```
+
 ## Your own job script (no template)
 
 [`perlmutter_script_job.yaml`](../src/globusiri/data/jobs/perlmutter_script_job.yaml) sets

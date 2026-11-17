@@ -258,7 +258,7 @@ def cmd_e2e_stage(args, api):
         print_runs([r])
         if r["status"] == "active":
             print(f"next: globusiri monitor {r['run_id']}   (or keep `globusiri daemon` running)")
-        return EXIT_OK if r["status"] != "failed" else JobFailed.exit_code
+        return _exit_for(r)
     if args.action == "cleanup":
         r = api.e2e_cleanup(args.site, args.paths, manifest=args.manifest, rucio=args.rucio, force=args.force,
                             dry_run=args.dry_run, wait=False, rucio_deterministic=bool(args.scope), scope=args.scope)
@@ -331,6 +331,21 @@ def print_runs(runs, as_json=False):
         print("no runs")
 
 
+def _exit_for(r):
+    from .workflow import DOWNLOAD_FAILED, FAILED, UPLOAD_FAILED
+
+    return JobFailed.exit_code if r["status"] in (FAILED, UPLOAD_FAILED, DOWNLOAD_FAILED) else EXIT_OK
+
+
+def _retry_hint(runs):
+    from .workflow import RETRYABLE
+
+    for r in runs:
+        if r.get("status") in RETRYABLE:
+            print(f"{r['run_id']}: {r['status']}; retry the {RETRYABLE[r['status']].replace('https_', '')} "
+                  f"with: globusiri monitor {r['run_id']}")
+
+
 def cmd_submit(args, api):
     if args.resume:
         if args.job:
@@ -351,7 +366,8 @@ def cmd_submit(args, api):
         print_runs([r])
         if r["status"] == "active":
             print(f"next: globusiri monitor {r['run_id']}   (or keep `globusiri daemon` running)")
-    return EXIT_OK if r["status"] != "failed" else JobFailed.exit_code
+        _retry_hint([r])
+    return _exit_for(r)
 
 
 def _submit_new(args, api):
@@ -368,6 +384,7 @@ def cmd_monitor(args, api):
         return EXIT_OK
     runs = [r for r in res.values() if isinstance(r, dict)]
     print_runs(runs)
+    _retry_hint(runs)
     for rid, r in res.items():
         if not isinstance(r, dict):
             print(f"{rid}: {r}", file=sys.stderr)
@@ -594,7 +611,9 @@ def build_parser():
 
     s = sub.add_parser("monitor", parents=[common],
                        help="one pass: check each active run's current step and trigger the next")
-    s.add_argument("run_ids", nargs="*", metavar="RUN_ID", help="default: every active run")
+    s.add_argument("run_ids", nargs="*", metavar="RUN_ID",
+                   help="default: every active run. A run given here that ended upload_failed or "
+                        "download_failed redoes the failed upload/download, then carries on")
     s.add_argument("--resume", action="store_true",
                    help="first reopen the given failed runs (failed steps go back to pending)")
     s.add_argument("--json", action="store_true")
@@ -605,7 +624,8 @@ def build_parser():
 
     s = sub.add_parser("runs", parents=[common], help="list workflow runs, or show one")
     s.add_argument("run_id", nargs="?", metavar="RUN_ID")
-    s.add_argument("--status", choices=["active", "finished", "failed", "cancelled"])
+    s.add_argument("--status", choices=["active", "finished", "failed", "cancelled", "upload_failed",
+                                        "download_failed"])
     s.add_argument("--reindex", action="store_true", help="rebuild the central index from saved run states")
     s.add_argument("--json", action="store_true")
 

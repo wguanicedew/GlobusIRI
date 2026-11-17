@@ -15,7 +15,11 @@ from .conftest import FakeResponse, FakeSession, write_access
 
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch):
-    monkeypatch.setattr(http_mod.time, "sleep", lambda s: None)
+    from globusiri.clients import https as https_mod
+    from globusiri.clients import iri as iri_mod
+
+    for mod in (http_mod, iri_mod, https_mod):
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
 
 
 def make_iri(tmp_path, responses, debug=False):
@@ -35,10 +39,34 @@ def test_iri_retries_5xx_then_succeeds(tmp_path):
     assert kw["headers"]["Authorization"] == "Bearer TOKEN-SECRET-123"
 
 
-def test_iri_no_retry_on_4xx(tmp_path):
+def test_iri_4xx_retried_after_sleep_then_fails(tmp_path):
+    # no quick resend for a 4xx, but the call is tried again after retry_sleep (3 attempts)
+    c = make_iri(tmp_path, [FakeResponse(400, {"detail": "bad"})] * 3)
+    with pytest.raises(RemoteError, match="failed 3 times"):
+        c.get_job("J1")
+    assert len(c.session.calls) == 3
+
+
+def test_iri_error_then_success(tmp_path):
+    c = make_iri(tmp_path, [_task("t1"), FakeResponse(200, {"status": "failed", "result": "Internal error"}),
+                            _task("t2"), FakeResponse(200, {"status": "completed", "result": {}})])
+    assert c.mkdir("/w/r")["status"] == "completed"
+    assert len(c.session.calls) == 4
+
+
+@pytest.mark.parametrize("resp", [FakeResponse(404, {"detail": "not found"}), FakeResponse(501, {"detail": "no"})])
+def test_iri_definite_answers_not_retried(tmp_path, resp):
+    c = make_iri(tmp_path, [resp])
+    with pytest.raises(RemoteError):
+        c.stat("/x")
+    assert len(c.session.calls) == 1
+
+
+def test_iri_submit_not_retried_on_other_errors(tmp_path):
+    # a lost reply may hide an accepted job: never resubmit (sfapi errors excepted)
     c = make_iri(tmp_path, [FakeResponse(400, {"detail": "bad"})])
     with pytest.raises(RemoteError):
-        c.get_job("J1")
+        c.launch_job({"a": 1})
     assert len(c.session.calls) == 1
 
 
@@ -152,11 +180,11 @@ def test_iri_sfapi_gives_up_after_retries(tmp_path, monkeypatch):
     assert len(c.session.calls) == 3
 
 
-def test_iri_other_task_failure_not_retried(tmp_path, monkeypatch):
+def test_iri_missing_path_task_not_retried(tmp_path):
     from globusiri.clients import iri as iri_mod
 
-    monkeypatch.setattr(iri_mod.time, "sleep", lambda s: None)
-    c = make_iri(tmp_path, [_task("t1"), FakeResponse(200, {"status": "failed", "result": "No such file"})])
+    c = make_iri(tmp_path, [_task("t1"), FakeResponse(200, {"status": "failed",
+                                                             "result": "No such file or directory"})])
     with pytest.raises(RemoteError, match="No such file") as err:
         c.ls("/missing")
     assert not isinstance(err.value, iri_mod.SfapiUnavailable)
@@ -172,3 +200,35 @@ def test_iri_upload_retry_reopens_file(tmp_path, monkeypatch):
     c = make_iri(tmp_path, [FakeResponse(404, {"detail": SFAPI}), FakeResponse(200, {"ok": True})])
     assert c.upload(src, "/w/job.sh") == {"ok": True}
     assert len(c.session.calls) == 2
+
+
+GLOBUS_404 = ("GlobusError: v=1 c=INTERNAL_ERROR\nglobus_xio: Unable to open file /x/result.txt\n"
+              "globus_xio: System error in open: No such file or directory")
+
+
+def make_https(tmp_path, responses, **kw):
+    write_access(tmp_path / "https.yaml", https_server="https://g.example")
+    c = GlobusHttpsClient(TokenSource(tmp_path / "https.yaml", label="HTTPS", fix="fix"), PathMap(), **kw)
+    c.session = FakeSession(responses)
+    return c
+
+
+def test_https_get_retries_404_until_file_appears(tmp_path):
+    c = make_https(tmp_path, [FakeResponse(404, text=GLOBUS_404), FakeResponse(200, content=b"done")])
+    c.get("/x/result.txt", tmp_path / "out" / "result.txt")
+    assert (tmp_path / "out" / "result.txt").read_bytes() == b"done"
+    assert len(c.session.calls) == 2
+
+
+def test_https_get_gives_up_after_retries(tmp_path):
+    c = make_https(tmp_path, [FakeResponse(404, text=GLOBUS_404)] * 2, retry_attempts=2)
+    with pytest.raises(RemoteError, match="failed 2 times"):
+        c.get("/x/result.txt", tmp_path / "result.txt")
+    assert len(c.session.calls) == 2
+
+
+def test_https_token_errors_not_retried(tmp_path):
+    c = make_https(tmp_path, [FakeResponse(401, text="expired")])
+    with pytest.raises(LoginRequired):
+        c.get("/x/result.txt", tmp_path / "result.txt")
+    assert len(c.session.calls) == 1

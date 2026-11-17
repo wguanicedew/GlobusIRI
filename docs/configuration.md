@@ -72,7 +72,7 @@ token_files:
 |---|---|---|
 | `globus_client_id` | `165ae151-86aa-430a-8251-ce565e51998f` | Native app client used for HTTPS and E2E logins |
 | `refresh_min_lifetime` | `0` | `refresh` skips the refresh if the token outlives this |
-| `retries` | `3` | Retries on connection errors and HTTP 429/5xx |
+| `retries` | `3` | Quick resends (exponential backoff) on connection errors and HTTP 429/5xx. Slower retries of other errors are per site: `iri.retries`, `https.retries` |
 
 ## `database`
 
@@ -196,6 +196,8 @@ Then check the new site with `globusiri validate <SITE>`. Copy an example job fi
 | `debug` | Print redacted request traces | `iri_debug` |
 | `sfapi_retries` | Attempts per IRI call while NERSC answers `Unable to get sfapi data` (default `3`; at least 1) | — |
 | `sfapi_retry_sleep` | Wait between those attempts: seconds, or a duration such as `3s`, `1m` (default `3`) | — |
+| `retries` | Attempts in all for any other failed IRI call (an HTTP error, or a failed task), default `3`. Not retried: HTTP 404 and "No such file or directory" (missing path), HTTP 501 (not implemented), 401/403 (token), and job submission, where a lost reply could hide an accepted job | — |
+| `retry_sleep` | Wait between those attempts (default `10`) | — |
 
 ### `remote`
 
@@ -250,6 +252,8 @@ files (see [Job files](#job-files)).
 | `https_server` | Optional. Pins the HTTPS server address. Together with `collection_id`, it lets `https login` skip the first (search) login | — |
 | `path_map` | Map from HPC mount paths to this collection's Globus paths | `globus_upload_dir` / `globus_download_dir` |
 | `panda_secret_key` | For example, `NERSC_HTTPS_TOKEN` | `--panda_secret_key` |
+| `retries` | Attempts in all for a failed download or upload (default `3`), for example HTTP 404 for a file written at the end of a job that the collection does not see yet, or a transient `GlobusError`. 401/403 (token) are not retried | — |
+| `retry_sleep` | Wait between those attempts: seconds, or a duration such as `10s`, `1m` (default `10`) | — |
 
 ### `e2e` (per site)
 
@@ -333,7 +337,8 @@ A job file that has E2E manifests or Rucio files while `enabled: false` is rejec
 configuration error (exit 2), so that data is never silently left untransferred.
 
 `run` cleans up only after the job finished successfully and the HTTPS download and E2E
-stage-out did not fail. A failed or cancelled run keeps its files so you can debug it. You can
+stage-out did not fail. After a failed download, the run is `download_failed` and its remote
+files are kept; `globusiri monitor RUN_ID` downloads the missing files and then cleans up. A failed or cancelled run keeps its files so you can debug it. You can
 remove them later with `globusiri job cleanup` and `globusiri e2e cleanup`.
 
 
