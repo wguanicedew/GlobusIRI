@@ -91,3 +91,22 @@ def test_upload_method_defaults_to_globus_https(work):
     del raw["sites"]["NERSC_Perlmutter"]["https"]
     with pytest.raises(ConfigError, match="upload_method is globus_https"):
         Config(raw, paths=work)
+
+
+def test_iri_sfapi_retry_settings(work):
+    import yaml
+
+    from globusiri import services
+
+    raw = yaml.safe_load(work.default_config.read_text())
+    raw["sites"]["NERSC_Perlmutter"]["iri"].update(sfapi_retries=5, sfapi_retry_sleep="1m")
+    cfg = Config(raw, paths=work)
+    site = cfg.site("NERSC_Perlmutter")
+    assert (site.iri_sfapi_retries, site.iri_sfapi_retry_sleep) == (5, 60)
+    client = services.iri_client(cfg, site)
+    assert (client.sfapi_retries, client.sfapi_retry_sleep) == (5, 60)
+    crux = cfg.site("ALCF_CRUX")   # not set: the defaults
+    assert (crux.iri_sfapi_retries, crux.iri_sfapi_retry_sleep) == (3, 3)
+    raw["sites"]["NERSC_Perlmutter"]["iri"]["sfapi_retries"] = 0
+    with pytest.raises(ConfigError, match="sfapi_retries must be >= 1"):
+        Config(raw, paths=work)

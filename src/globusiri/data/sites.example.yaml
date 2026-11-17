@@ -66,7 +66,7 @@ e2e:
       query: SDCC                 # as in generate_transfer_token_to_panda.py ENDPOINT_QUERIES
       pick: 0
       data_access: true
-      session_domains: [bnl.gov]  # verify: the domain of your BNL/SDCC Globus identity
+      session_domains: [sdcc.bnl.gov]  # verify: the domain of your BNL/SDCC Globus identity
       path_map:                   # dCache namespace -> path on the SDCC Globus collection
         /pnfs: /dcint-door003     # /pnfs/usatlas.bnl.gov/x -> /dcint-door003/usatlas.bnl.gov/x
     NERSC:
@@ -100,6 +100,10 @@ sites:
       session_domains: [nersc.gov]      # `iri login` asks for a login per domain first
       validate: true
       debug: true
+      # NERSC's transient "Unable to get sfapi data": a call is sent again after
+      # sfapi_retry_sleep, and fails after sfapi_retries attempts in a row
+      sfapi_retries: 3
+      sfapi_retry_sleep: 3s
 
     remote:
       work_dir: /global/cfs/cdirs/m2616/harvester_workdir

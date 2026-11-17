@@ -164,6 +164,15 @@ class Site:
         self.iri_validate = bool(iri.get("validate", True))
         self.iri_debug = bool(iri.get("debug", False))
         self.iri_session_domains = str_list(iri.get("session_domains"))
+        # NERSC's transient "Unable to get sfapi data": attempts per call, and the wait between them
+        try:
+            self.iri_sfapi_retries = int(iri.get("sfapi_retries", 3))
+            self.iri_sfapi_retry_sleep = parse_duration(iri.get("sfapi_retry_sleep"), 3)
+        except (TypeError, ValueError):
+            raise ConfigError(f"sites.{name}.iri.sfapi_retries must be an integer and "
+                              "sfapi_retry_sleep a duration (e.g. 3, 3s, 1m)") from None
+        if self.iri_sfapi_retries < 1 or self.iri_sfapi_retry_sleep < 0:
+            raise ConfigError(f"sites.{name}.iri.sfapi_retries must be >= 1 and sfapi_retry_sleep >= 0")
 
         remote = raw.get("remote") or {}
         self.work_dir = remote.get("work_dir")

@@ -11,6 +11,7 @@ def iri_client(config, site, *, debug=None):
     mgr = IriTokenManager(config, site)
     source = TokenSource(mgr.access_file, label=f"IRI ({site.facility})", fix=mgr.fix("refresh"))
     return IriClient(site.base_url, source, resource_id=site.resource_id, retries=config.retries,
+                     sfapi_retries=site.iri_sfapi_retries, sfapi_retry_sleep=site.iri_sfapi_retry_sleep,
                      debug=site.iri_debug if debug is None else debug)
 
 

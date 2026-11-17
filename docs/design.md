@@ -670,7 +670,7 @@ errors and HTTP 429/5xx. A 4xx is never retried. IRI async filesystem tasks keep
 `Unable to get sfapi data: 403`, which arrives as an HTTP error (often 403 or 404) or as the
 result of a failed task. The whole IRI call (request and task) is sent again after
 3 seconds, and it fails with `SfapiUnavailable` (a `RemoteError`, not `LoginRequired`) only
-after 3 attempts in a row get it. This applies to every IRI call, including job submission:
+after 3 attempts in a row get it (site settings `iri.sfapi_retry_sleep`, `iri.sfapi_retries`). This applies to every IRI call, including job submission:
 the error means NERSC did not get as far as acting on the request.
 
 ## 10. Security

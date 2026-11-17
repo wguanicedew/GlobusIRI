@@ -125,6 +125,63 @@ server handles concurrency, and the lock orders each `state.json` write with its
 |---|---|
 | `facility` | `nersc` \| `alcf`. Selects the IRI client ID, scope, and validation call |
 
+### Adding and removing sites
+
+The sites in the shipped example (`NERSC_Perlmutter`, `ALCF_CRUX`) are only a starting point.
+`<WORK_DIR>/config/sites.yaml` is your own file: add, rename or remove sites to match the
+machines, projects and directories you use. `globusiri init` never overwrites it (unless
+`--force`), so your edits survive package upgrades.
+
+**Remove a site:** delete its block under `sites:`. You can also start with only some example
+sites, for example `globusiri init --sites NERSC_Perlmutter`. Afterwards:
+
+- Job files that name the removed site (`site:` in `<WORK_DIR>/jobs/*.yaml`) fail with
+  `unknown site`. Delete them or point them at another site.
+- Entries under `e2e.endpoints` that no site uses can stay.
+- That site's token files under `<WORK_DIR>/tokens/` are no longer used and can be deleted.
+
+**Add a site:** copy an existing block with the same facility, give it a new name, and change
+the values. The name is free text; it is what you pass on the command line
+(`globusiri validate MY_SITE`) and in a job file's `site:`.
+
+| Needed | Keys |
+|---|---|
+| Always | `facility` (`nersc` or `alcf`), `iri.base_url`, `iri.resource_id`, `remote.work_dir` |
+| With `upload_method: globus_https` (the default) | an `https` section (`collection_query` or `collection_id`, `path_map`). Without it, set `remote.upload_method: iri` |
+| For E2E transfers only | an `e2e` section whose `endpoint` is a label in the top-level `e2e.endpoints` |
+| Optional | `remote.log_dir`, `unsupported_resource_fields`, `job_defaults` (project, queue, ...), `iri.sfapi_retries`, ... |
+
+Only the facilities `nersc` and `alcf` are supported. You can have several sites at one
+facility, for example a second Perlmutter site for another project or work directory:
+
+```yaml
+sites:
+  NERSC_Perlmutter_m1234:
+    facility: nersc
+    iri:
+      base_url: https://api.iri.nersc.gov
+      resource_id: 59e80c79-4dfd-4c53-9c07-7405685fcd37   # Perlmutter compute
+    remote:
+      work_dir: /global/cfs/cdirs/m1234/globusiri_workdir
+      upload_method: globus_https
+    job_defaults:
+      project: m1234
+    https:
+      collection_query: NERSC DTN
+      path_map: {}                  # Globus path == Perlmutter mount path
+```
+
+Tokens follow the facility and site:
+
+- The **IRI** token is per facility: every `nersc` site shares `tokens/iri/nersc.*`, so a new
+  NERSC site needs no new IRI login.
+- The **HTTPS** token is per site (`tokens/https/<SITE>.*`), so a new site needs
+  `globusiri https login <SITE>`.
+- The **E2E** token is shared by all sites.
+
+Then check the new site with `globusiri validate <SITE>`. Copy an example job file, set its
+`site:` to the new name, and submit it.
+
 ### `iri`
 
 | Key | Description | Harvester queueconfig equivalent |
@@ -137,6 +194,8 @@ server handles concurrency, and the lock orders each `state.json` write with its
 | `validate_url` | Optional. Overrides the validation URL (default: NERSC `account/projects`; ALCF filesystem `ls` on Home) | `--iri-validate-url` |
 | `validate_resource_id`, `validate_path` | Optional. ALCF only: resource and path for the default `ls` (default: Home, `/home/$USER/`) | `--alcf-validate-resource-id`, `--alcf-validate-path` |
 | `debug` | Print redacted request traces | `iri_debug` |
+| `sfapi_retries` | Attempts per IRI call while NERSC answers `Unable to get sfapi data` (default `3`; at least 1) | — |
+| `sfapi_retry_sleep` | Wait between those attempts: seconds, or a duration such as `3s`, `1m` (default `3`) | — |
 
 ### `remote`
 

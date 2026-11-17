@@ -24,6 +24,11 @@ globusiri init && globusiri paths
 Config, tokens, logs, and run state all live under `GLOBUSIRI_WORK_DIR`. If the variable is
 not set, they go in the per-user globusiri data directory.
 
+The generated `config/sites.yaml` lists two example sites (`NERSC_Perlmutter`, `ALCF_CRUX`).
+Edit it to work on your own sites: add sites (more NERSC or ALCF resources, other projects or
+work directories) or remove the ones you do not use. `globusiri init` never overwrites it. See
+[adding and removing sites](docs/configuration.md#adding-and-removing-sites).
+
 Three ways to drive a workflow (same steps, one engine that never blocks):
 
 ```bash
