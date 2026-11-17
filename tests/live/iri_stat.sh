@@ -14,7 +14,7 @@
 # `globusiri validate` does.
 set -euo pipefail
 
-TARGET=${1:-/global/cfs/cdirs/m2616/www/PanDA_logs/IRI/20261117-092123-f34eb7}
+TARGET=${1:-/global/cfs/cdirs/m2616/www/PanDA_logs/IRI}
 BASE_URL=${IRI_BASE_URL:-https://api.iri.nersc.gov}
 RESOURCE_ID=${IRI_RESOURCE_ID:-59e80c79-4dfd-4c53-9c07-7405685fcd37}
 TASK_POLL_INTERVAL=${TASK_POLL_INTERVAL:-5}
@@ -56,6 +56,7 @@ http() {
 # Returns 0 when the call (and its task) completed.
 fs() {
     local op=$1 task_id task_uri status i
+    TASK_FAILED=
     echo ">>> GET $BASE_URL/api/v1/filesystem/$op/$RESOURCE_ID?path=$TARGET"
     http "$BASE_URL/api/v1/filesystem/$op/$RESOURCE_ID" --data-urlencode "path=$TARGET"
     echo "HTTP $CODE"
@@ -83,6 +84,7 @@ fs() {
                 return 0 ;;
             failed|canceled)
                 printf '%s\n' "$BODY" | pretty
+                TASK_FAILED=1
                 return 1 ;;
         esac
         ((i < TASK_MAX_POLLS)) && sleep "$TASK_POLL_INTERVAL"
@@ -94,7 +96,7 @@ fs() {
 if fs stat; then
     exit 0
 fi
-if [[ $CODE == 403 || $CODE == 501 || -n ${status:-} ]]; then
+if [[ $CODE == 403 || $CODE == 501 || -n $TASK_FAILED ]]; then
     echo "stat failed; trying ls" >&2
     fs ls
 else
