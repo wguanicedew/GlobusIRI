@@ -157,7 +157,8 @@ def test_stagein_rank0_extracts_others_wait(cfg, tmp_path, work):
     def start(rank):
         env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "PMI", "PALS_", "OMPI_"))}
         env["PMI_RANK"] = str(rank)
-        return subprocess.Popen(["/bin/sh", str(remote / "job.sh")], env=env, cwd=tmp_path,
+        # the script's #! is /bin/bash (set -o pipefail); /bin/sh may be dash, e.g. on Ubuntu
+        return subprocess.Popen(["/bin/bash", str(remote / "job.sh")], env=env, cwd=tmp_path,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     waiters = [start(1), start(2)]
@@ -172,16 +173,21 @@ def test_stagein_rank0_extracts_others_wait(cfg, tmp_path, work):
     assert (remote / jobs.STAGEIN_DONE).exists()
 
 
-def test_stagein_other_ranks_fail_fast_when_rank0_fails(cfg, tmp_path):
+# the stage-in block is plain POSIX sh: check it under dash too (Ubuntu/Debian /bin/sh)
+POSIX_SHELLS = [s for s in ("/bin/bash", "/bin/dash") if Path(s).exists()]
+
+
+@pytest.mark.parametrize("shell", POSIX_SHELLS)
+def test_stagein_other_ranks_fail_fast_when_rank0_fails(cfg, tmp_path, shell):
     work_dir = tmp_path / "remote"
     work_dir.mkdir()
     (work_dir / jobs.INPUT_ARCHIVE).write_text("not a tarball")
     script = work_dir / "job.sh"
     script.write_text(jobs.stagein_block(str(work_dir)) + "echo ran\n")
     env = {"PATH": "/usr/bin:/bin", "PMI_RANK": "0"}
-    r0 = subprocess.run(["/bin/sh", str(script)], env=env, capture_output=True, text=True)
+    r0 = subprocess.run([shell, str(script)], env=env, capture_output=True, text=True)
     assert r0.returncode != 0 and (work_dir / jobs.STAGEIN_FAILED).exists()
-    r1 = subprocess.run(["/bin/sh", str(script)], env={**env, "PMI_RANK": "1"}, capture_output=True, text=True,
+    r1 = subprocess.run([shell, str(script)], env={**env, "PMI_RANK": "1"}, capture_output=True, text=True,
                         timeout=10)
     assert r1.returncode != 0 and "rank 0 failed" in r1.stderr and "ran" not in r1.stdout
 
