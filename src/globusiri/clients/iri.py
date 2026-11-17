@@ -42,7 +42,7 @@ def _encode(segment):
 
 class IriClient:
     def __init__(self, base_url, token_source, *, resource_id=None, retries=3, debug=False,
-                 task_poll_interval=5, task_max_polls=60, sfapi_retries=3, sfapi_retry_sleep=10):
+                 task_poll_interval=5, task_max_polls=60, sfapi_retries=3, sfapi_retry_sleep=3):
         self.base_url = base_url.rstrip("/")
         self.token_source = token_source
         self.resource_id = resource_id
