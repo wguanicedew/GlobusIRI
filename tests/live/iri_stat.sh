@@ -10,6 +10,9 @@
 # The filesystem calls are asynchronous: the reply is {"task_id": ..., "task_uri": ...}, and the
 # result comes from polling GET task_uri until its status is completed, failed or canceled
 # (every $TASK_POLL_INTERVAL s, at most $TASK_MAX_POLLS times; same as the globusiri client).
+# NERSC sometimes answers "Unable to get sfapi data: 403" (in the reply or in the failed task)
+# for a moment: such a call is repeated after $SFAPI_RETRY_SLEEP s, and fails only after
+# $SFAPI_RETRIES attempts in a row get it.
 # If stat fails (HTTP 403/501, or its task fails), the same path is tried with ls, as
 # `globusiri validate` does.
 set -euo pipefail
@@ -19,6 +22,9 @@ BASE_URL=${IRI_BASE_URL:-https://api.iri.nersc.gov}
 RESOURCE_ID=${IRI_RESOURCE_ID:-59e80c79-4dfd-4c53-9c07-7405685fcd37}
 TASK_POLL_INTERVAL=${TASK_POLL_INTERVAL:-5}
 TASK_MAX_POLLS=${TASK_MAX_POLLS:-60}
+SFAPI_RETRIES=${SFAPI_RETRIES:-3}
+SFAPI_RETRY_SLEEP=${SFAPI_RETRY_SLEEP:-10}
+SFAPI_ERROR="Unable to get sfapi data"
 
 command -v python3 >/dev/null || { echo "python3 is needed to read the JSON replies" >&2; exit 1; }
 
@@ -52,16 +58,20 @@ http() {
     BODY=${out%$'\n'*}
 }
 
-# fs OP: GET <base>/api/v1/filesystem/OP/<resource_id>?path=TARGET, then follow its task.
-# Returns 0 when the call (and its task) completed.
-fs() {
+# fs_once OP: GET <base>/api/v1/filesystem/OP/<resource_id>?path=TARGET, then follow its task.
+# Returns 0 when the call (and its task) completed. Sets SFAPI_FAILED when it failed with
+# the transient NERSC sfapi error.
+fs_once() {
     local op=$1 task_id task_uri status i
-    TASK_FAILED=
+    TASK_FAILED= SFAPI_FAILED=
     echo ">>> GET $BASE_URL/api/v1/filesystem/$op/$RESOURCE_ID?path=$TARGET"
     http "$BASE_URL/api/v1/filesystem/$op/$RESOURCE_ID" --data-urlencode "path=$TARGET"
     echo "HTTP $CODE"
     printf '%s\n' "$BODY" | pretty
-    [[ $CODE == 2?? ]] || return 1
+    if [[ $CODE != 2?? ]]; then
+        [[ $BODY == *"$SFAPI_ERROR"* ]] && SFAPI_FAILED=1
+        return 1
+    fi
 
     task_id=$(printf '%s' "$BODY" | json_get task_id)
     task_uri=$(printf '%s' "$BODY" | json_get task_uri)
@@ -74,6 +84,7 @@ fs() {
         if [[ $CODE != 2?? ]]; then
             echo "task poll $i: HTTP $CODE"
             printf '%s\n' "$BODY" | pretty
+            [[ $BODY == *"$SFAPI_ERROR"* ]] && SFAPI_FAILED=1
             return 1
         fi
         status=$(printf '%s' "$BODY" | json_get status)
@@ -85,11 +96,27 @@ fs() {
             failed|canceled)
                 printf '%s\n' "$BODY" | pretty
                 TASK_FAILED=1
+                [[ $BODY == *"$SFAPI_ERROR"* ]] && SFAPI_FAILED=1
                 return 1 ;;
         esac
         ((i < TASK_MAX_POLLS)) && sleep "$TASK_POLL_INTERVAL"
     done
     echo "task $task_id not finished after $TASK_MAX_POLLS polls" >&2
+    return 1
+}
+
+# fs OP: fs_once, repeated while it fails with the sfapi error (at most SFAPI_RETRIES attempts)
+fs() {
+    local op=$1 attempt
+    for ((attempt = 1; attempt <= SFAPI_RETRIES; attempt++)); do
+        fs_once "$op" && return 0
+        [[ -n $SFAPI_FAILED ]] || return 1
+        if ((attempt < SFAPI_RETRIES)); then
+            echo "$op: '$SFAPI_ERROR' (attempt $attempt/$SFAPI_RETRIES); retrying in ${SFAPI_RETRY_SLEEP}s" >&2
+            sleep "$SFAPI_RETRY_SLEEP"
+        fi
+    done
+    echo "$op: '$SFAPI_ERROR' in all $SFAPI_RETRIES attempts; giving up" >&2
     return 1
 }
 

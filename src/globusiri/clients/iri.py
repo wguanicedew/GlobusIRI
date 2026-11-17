@@ -3,6 +3,11 @@
 Differences from the Harvester version: the access token comes from a TokenSource
 (re-read when the token file changes), requests retry on connection errors and HTTP
 429/5xx, and debug output never contains the bearer token.
+
+NERSC's IRI sometimes fails a call with "Unable to get sfapi data: 403" (as the HTTP error,
+or as the result of the call's failed task), and the same call works moments later. Such a
+call is sent again after `sfapi_retry_sleep` seconds; it fails (SfapiUnavailable) only when
+`sfapi_retries` attempts in a row get the error.
 """
 
 import json
@@ -20,6 +25,15 @@ from .http import request_with_retry
 log = logging.getLogger("globusiri.iri")
 
 _TASK_TERMINAL_STATES = {"completed", "failed", "canceled"}
+SFAPI_ERROR = "Unable to get sfapi data"
+
+
+class SfapiUnavailable(RemoteError):
+    """NERSC's transient "Unable to get sfapi data" error (raised after the retries)."""
+
+
+def _is_sfapi(detail):
+    return SFAPI_ERROR in str(detail)
 
 
 def _encode(segment):
@@ -28,7 +42,7 @@ def _encode(segment):
 
 class IriClient:
     def __init__(self, base_url, token_source, *, resource_id=None, retries=3, debug=False,
-                 task_poll_interval=5, task_max_polls=60):
+                 task_poll_interval=5, task_max_polls=60, sfapi_retries=3, sfapi_retry_sleep=10):
         self.base_url = base_url.rstrip("/")
         self.token_source = token_source
         self.resource_id = resource_id
@@ -36,6 +50,8 @@ class IriClient:
         self.debug = debug
         self.task_poll_interval = task_poll_interval
         self.task_max_polls = task_max_polls
+        self.sfapi_retries = max(1, int(sfapi_retries))
+        self.sfapi_retry_sleep = sfapi_retry_sleep
         self.session = requests.Session()
         self.session.headers["Accept"] = "application/json"
 
@@ -67,6 +83,8 @@ class IriClient:
             detail = resp.json()
         except ValueError:
             detail = resp.text[:500]
+        if _is_sfapi(detail):  # often HTTP 403/404, but not a token problem
+            raise SfapiUnavailable(f"IRI {what}: HTTP {resp.status_code}: {detail}", status=resp.status_code)
         if resp.status_code in (401, 403):
             raise LoginRequired(f"IRI {what}: HTTP {resp.status_code}: {detail}")
         raise RemoteError(f"IRI {what}: HTTP {resp.status_code}: {detail}", status=resp.status_code)
@@ -89,11 +107,28 @@ class IriClient:
             status = task.get("status", "")
             if status in _TASK_TERMINAL_STATES:
                 if status != "completed":
+                    if _is_sfapi(task.get("result")):
+                        raise SfapiUnavailable(f"IRI {what}: task {task_id} ended {status}: {task.get('result')}")
                     raise RemoteError(f"IRI {what}: task {task_id} ended {status}: {task.get('result')}")
                 return task
             if attempt < self.task_max_polls:
                 time.sleep(self.task_poll_interval)
         raise RemoteError(f"IRI {what}: task {task_id} not finished after {self.task_max_polls} polls")
+
+    def _call(self, what, send):
+        """send() (one request, and its task), sent again while it fails with SfapiUnavailable."""
+        for attempt in range(1, self.sfapi_retries + 1):
+            try:
+                return send()
+            except SfapiUnavailable as exc:
+                if attempt >= self.sfapi_retries:
+                    raise SfapiUnavailable(f"{exc} (failed {attempt} times in a row)", status=exc.status) from None
+                log.warning("IRI %s: '%s' (attempt %d/%d); retrying in %ss",
+                            what, SFAPI_ERROR, attempt, self.sfapi_retries, self.sfapi_retry_sleep)
+                time.sleep(self.sfapi_retry_sleep)
+
+    def _api(self, method, url, what, **kw):
+        return self._call(what, lambda: self._json(self._request(method, url, **kw), what))
 
     def get_url(self, url, what="GET"):
         """GET an arbitrary IRI URL (used for token validation). Returns the response."""
@@ -102,11 +137,11 @@ class IriClient:
     # ------------------------------------------------------------------ compute
     def launch_job(self, job_spec, *, resource_id=None):
         url = f"{self.base_url}/api/v1/compute/job/{_encode(self._rid(resource_id))}"
-        return self._json(self._request("POST", url, json_body=job_spec), "submit job")
+        return self._api("POST", url, "submit job", json_body=job_spec)
 
     def get_job(self, job_id, *, resource_id=None):
         url = f"{self.base_url}/api/v1/compute/status/{_encode(self._rid(resource_id))}/{_encode(job_id)}"
-        return self._json(self._request("GET", url), f"status of job {job_id}")
+        return self._api("GET", url, f"status of job {job_id}")
 
     def get_jobs(self, *, resource_id=None, offset=None, limit=None, historical=False, include_spec=False):
         url = f"{self.base_url}/api/v1/compute/status/{_encode(self._rid(resource_id))}"
@@ -119,11 +154,11 @@ class IriClient:
             params["historical"] = "true"
         if include_spec:
             params["include_spec"] = "true"
-        return self._json(self._request("POST", url, params=params, json_body={}), "list jobs")
+        return self._api("POST", url, "list jobs", params=params, json_body={})
 
     def cancel_job(self, job_id, *, resource_id=None):
         url = f"{self.base_url}/api/v1/compute/cancel/{_encode(self._rid(resource_id))}/{_encode(job_id)}"
-        return self._json(self._request("DELETE", url), f"cancel job {job_id}")
+        return self._api("DELETE", url, f"cancel job {job_id}")
 
     # ------------------------------------------------------------------ filesystem
     def stat(self, path, *, resource_id=None, dereference=False):
@@ -131,36 +166,44 @@ class IriClient:
         if dereference:
             params["dereference"] = "true"
         url = f"{self.base_url}/api/v1/filesystem/stat/{_encode(self._rid(resource_id))}"
-        return self._json(self._request("GET", url, params=params), f"stat {path}")
+        return self._api("GET", url, f"stat {path}", params=params)
 
     def ls(self, path, *, resource_id=None, show_hidden=False):
         params = {"path": path}
         if show_hidden:
             params["showHidden"] = "true"
         url = f"{self.base_url}/api/v1/filesystem/ls/{_encode(self._rid(resource_id))}"
-        return self._json(self._request("GET", url, params=params), f"ls {path}")
+        return self._api("GET", url, f"ls {path}", params=params)
 
     def mkdir(self, path, *, resource_id=None, parents=False):
         url = f"{self.base_url}/api/v1/filesystem/mkdir/{_encode(self._rid(resource_id))}"
-        return self._json(self._request("POST", url, json_body={"path": path, "parent": parents}), f"mkdir {path}")
+        return self._api("POST", url, f"mkdir {path}", json_body={"path": path, "parent": parents})
 
     def chmod(self, path, mode, *, resource_id=None):
         url = f"{self.base_url}/api/v1/filesystem/chmod/{_encode(self._rid(resource_id))}"
-        return self._json(self._request("PUT", url, json_body={"path": path, "mode": str(mode)}), f"chmod {path}")
+        return self._api("PUT", url, f"chmod {path}", json_body={"path": path, "mode": str(mode)})
 
     def rm(self, path, *, resource_id=None):
         """Delete a file or directory (IRI `DELETE filesystem/rm`; runs as an async task)."""
         url = f"{self.base_url}/api/v1/filesystem/rm/{_encode(self._rid(resource_id))}"
-        return self._json(self._request("DELETE", url, params={"path": path}), f"rm {path}")
+        return self._api("DELETE", url, f"rm {path}", params={"path": path})
 
     def upload(self, local_path, remote_path, *, resource_id=None):
         url = f"{self.base_url}/api/v1/filesystem/upload/{_encode(self._rid(resource_id))}"
-        with open(local_path, "rb") as fh:
-            resp = self._request("POST", url, params={"path": remote_path}, files={"file": fh})
-        return self._json(resp, f"upload {remote_path}")
+        what = f"upload {remote_path}"
+
+        def send():
+            with open(local_path, "rb") as fh:  # reopened for each attempt
+                resp = self._request("POST", url, params={"path": remote_path}, files={"file": fh})
+            return self._json(resp, what)
+
+        return self._call(what, send)
 
     def download(self, remote_path, local_dest, *, resource_id=None):
         url = f"{self.base_url}/api/v1/filesystem/download/{_encode(self._rid(resource_id))}"
+        self._call(f"download {remote_path}", lambda: self._download(url, remote_path, local_dest))
+
+    def _download(self, url, remote_path, local_dest):
         resp = self._request("GET", url, params={"path": remote_path}, stream=True)
         self._check(resp, f"download {remote_path}")
         tmp = f"{local_dest}.part"

@@ -118,3 +118,57 @@ def test_iri_rm_waits_for_task(tmp_path, monkeypatch):
     method, url = c.session.calls[0][:2]
     assert method == "DELETE" and url == "https://api.example/api/v1/filesystem/rm/rid"
     assert c.session.calls[0][2]["params"] == {"path": "/a/b"}
+
+
+SFAPI = "Exception: Error: 404: Unable to get sfapi data: 403"
+
+
+def _task(tid):
+    return FakeResponse(200, {"task_id": tid, "task_uri": f"https://api.example/task/{tid}"})
+
+
+def test_iri_sfapi_task_failure_is_retried(tmp_path, monkeypatch):
+    from globusiri.clients import iri as iri_mod
+
+    sleeps = []
+    monkeypatch.setattr(iri_mod.time, "sleep", sleeps.append)
+    c = make_iri(tmp_path, [_task("t1"), FakeResponse(200, {"status": "failed", "result": SFAPI}),
+                            _task("t2"), FakeResponse(200, {"status": "failed", "result": SFAPI}),
+                            _task("t3"), FakeResponse(200, {"status": "completed", "result": {"output": {}}})])
+    assert c.stat("/x")["status"] == "completed"
+    assert [m for m, _, _ in c.session.calls].count("GET") == 6   # the stat was sent 3 times
+    assert sleeps == [c.sfapi_retry_sleep] * 2
+
+
+def test_iri_sfapi_gives_up_after_retries(tmp_path, monkeypatch):
+    from globusiri.clients import iri as iri_mod
+
+    monkeypatch.setattr(iri_mod.time, "sleep", lambda s: None)
+    c = make_iri(tmp_path, [FakeResponse(403, {"detail": SFAPI})] * 3)
+    with pytest.raises(iri_mod.SfapiUnavailable, match="failed 3 times in a row") as err:
+        c.get_job("J1")
+    assert not isinstance(err.value, LoginRequired)   # an HTTP 403 here is not a token problem
+    assert isinstance(err.value, RemoteError) and err.value.status == 403
+    assert len(c.session.calls) == 3
+
+
+def test_iri_other_task_failure_not_retried(tmp_path, monkeypatch):
+    from globusiri.clients import iri as iri_mod
+
+    monkeypatch.setattr(iri_mod.time, "sleep", lambda s: None)
+    c = make_iri(tmp_path, [_task("t1"), FakeResponse(200, {"status": "failed", "result": "No such file"})])
+    with pytest.raises(RemoteError, match="No such file") as err:
+        c.ls("/missing")
+    assert not isinstance(err.value, iri_mod.SfapiUnavailable)
+    assert len(c.session.calls) == 2
+
+
+def test_iri_upload_retry_reopens_file(tmp_path, monkeypatch):
+    from globusiri.clients import iri as iri_mod
+
+    monkeypatch.setattr(iri_mod.time, "sleep", lambda s: None)
+    src = tmp_path / "job.sh"
+    src.write_text("#!/bin/bash\n")
+    c = make_iri(tmp_path, [FakeResponse(404, {"detail": SFAPI}), FakeResponse(200, {"ok": True})])
+    assert c.upload(src, "/w/job.sh") == {"ok": True}
+    assert len(c.session.calls) == 2

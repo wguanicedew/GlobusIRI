@@ -666,7 +666,12 @@ e2e:
 
 Retries: IRI and HTTPS calls retry 3 times with exponential backoff, but only on connection
 errors and HTTP 429/5xx. A 4xx is never retried. IRI async filesystem tasks keep the existing
-`task_id` polling (5 seconds × 60).
+`task_id` polling (5 seconds × 60). The exception is NERSC's transient
+`Unable to get sfapi data: 403`, which arrives as an HTTP error (often 403 or 404) or as the
+result of a failed task. The whole IRI call (request and task) is sent again after
+10 seconds, and it fails with `SfapiUnavailable` (a `RemoteError`, not `LoginRequired`) only
+after 3 attempts in a row get it. This applies to every IRI call, including job submission:
+the error means NERSC did not get as far as acting on the request.
 
 ## 10. Security
 
