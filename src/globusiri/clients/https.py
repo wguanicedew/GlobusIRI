@@ -34,7 +34,7 @@ log = logging.getLogger("globusiri.https")
 
 class GlobusHttpsClient:
     def __init__(self, token_source, path_map, *, retries=3, debug=False, https_server=None,
-                 retry_attempts=3, retry_sleep=10):
+                 retry_attempts=3, retry_sleep=3):
         self.token_source = token_source
         self.path_map = path_map
         self.retries = retries
