@@ -73,6 +73,8 @@ token_files:
 | `globus_client_id` | `165ae151-86aa-430a-8251-ce565e51998f` | Native app client used for HTTPS and E2E logins |
 | `refresh_min_lifetime` | `0` | `refresh` skips the refresh if the token outlives this |
 | `retries` | `3` | Quick resends (exponential backoff) on connection errors and HTTP 429/5xx. Slower retries of other errors are per site: `iri.retries`, `https.retries` |
+| `transfer_retries` | `3` | How many times `monitor` redoes the upload or download of an `upload_failed` / `download_failed` run before it becomes `final_upload_failed` / `final_download_failed` ([cli.md](cli.md#non-blocking-workflow-submit-monitor-daemon)) |
+| `transfer_retry_interval` | `10m` | Wait before `monitor` without run IDs, or the daemon, retries such a run. `monitor RUN_ID` retries at once |
 
 ## `database`
 

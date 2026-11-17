@@ -383,3 +383,84 @@ def test_upload_failed_then_monitor_retries_upload(env):
     assert r["status"] == "active" and r["steps"]["upload"]["status"] == "done"
     assert r["steps"]["submit"]["status"] == "done"
     assert any(c[0] == "launch" for c in iri.calls)
+
+
+def _failing_downloads(names):
+    from globusiri.errors import RemoteError
+
+    https = services.https_client(None, None)
+    real_get = https.get
+
+    def get(remote, local):
+        if remote.rsplit("/", 1)[-1] in names:
+            raise RemoteError(f"HTTPS GET {remote}: HTTP 404: No such file or directory")
+        real_get(remote, local)
+
+    https.get = get
+    return https
+
+
+def _download_failed_run(g, iri, run_id):
+    g.submit("perlmutter_hello_job.yaml", run_id=run_id, validate=False,
+             set=["staging.https_stageout={stdout_stderr: true, files: [result.txt]}"])
+    iri.states = ["completed"]
+    return g.monitor([run_id])[run_id]
+
+
+def test_download_failed_becomes_final_after_retries(env):
+    g, iri, gl = env
+    g.config.transfer_retries = 2
+    https = _failing_downloads({"result.txt"})
+    assert _download_failed_run(g, iri, "F1")["status"] == workflow.DOWNLOAD_FAILED
+    r = g.monitor(["F1"])["F1"]                                    # retry 1 fails again
+    assert r["status"] == workflow.DOWNLOAD_FAILED and r["transfer_retries"] == 1
+    assert "retry 2/2" in r["message"]
+    r = g.monitor(["F1"])["F1"]                                    # retry 2 fails: give up
+    assert r["status"] == workflow.FINAL_DOWNLOAD_FAILED and r["plugin_status"] == "finished"
+    assert "gave up after 2 retries" in r["message"]
+    gets = len(https.gets)
+    assert g.monitor(["F1"])["F1"]["status"] == workflow.FINAL_DOWNLOAD_FAILED
+    assert len(https.gets) == gets                                 # no more attempts
+    g.reopen("F1")                                                 # manual resume: counted again from 0
+    assert g.run_state("F1").get("transfer_retries") is None
+
+
+def test_monitor_all_retries_transfer_failed_runs_when_due(env):
+    g, iri, gl = env
+    missing = {"result.txt"}
+    _failing_downloads(missing)
+    assert _download_failed_run(g, iri, "T1")["status"] == workflow.DOWNLOAD_FAILED
+    assert g.monitor() == {}                                       # not due yet (10 min)
+    g.config.transfer_retry_interval = 0
+    missing.clear()
+    assert g.monitor()["T1"]["status"] == "finished"
+
+
+def test_clean_old_runs(env, monkeypatch):
+    g, iri, gl = env
+    _failing_downloads(set())
+    for rid in ("old-done", "old-dl"):
+        g.submit("perlmutter_hello_job.yaml", run_id=rid, validate=False)
+    g.submit("perlmutter_hello_job.yaml", run_id="still-active", validate=False)
+    iri.states = ["completed"]
+    g.monitor(["old-done", "old-dl"])
+    st = g.run_state("old-dl")
+    st["status"] = workflow.DOWNLOAD_FAILED                      # still retried by monitor: kept
+    g.config.run_index().save(st)
+
+    assert g.clean(older_than="1d") == []                        # nothing that old
+    rows = g.clean(older_than=0, dry_run=True)
+    assert [(r["run_id"], r["result"]) for r in rows] == [("old-done", "would remove")]
+    assert g.config.paths.run_dir("old-done").is_dir()
+
+    iri.calls.clear()
+    rows = g.clean(older_than=0, remote=True)
+    assert [(r["run_id"], r["result"]) for r in rows] == [("old-done", "removed")]
+    assert any(c[0] == "rm" and c[1].endswith("/old-done") for c in iri.calls)
+    assert not g.config.paths.run_dir("old-done").exists()
+    assert {r["run_id"] for r in g.runs(summary=True)} == {"old-dl", "still-active"}
+
+    rows = g.clean(older_than=0, status=[workflow.DOWNLOAD_FAILED])
+    assert [r["run_id"] for r in rows] == ["old-dl"]
+    with pytest.raises(ConfigError, match="unknown run status"):
+        g.clean(older_than=0, status="done")

@@ -29,6 +29,12 @@ defaults:
   globus_client_id: 165ae151-86aa-430a-8251-ce565e51998f   # USATLAS_HPC_Globus native app
   refresh_min_lifetime: 6h                                  # `refresh` is a no-op if token lives longer
   retries: 3
+  # A run whose upload or download still fails after the client's retries ends upload_failed /
+  # download_failed. `globusiri monitor` (and the daemon) redo that transfer every
+  # transfer_retry_interval, at most transfer_retries times; then the run is
+  # final_upload_failed / final_download_failed. `globusiri monitor RUN_ID` retries at once.
+  transfer_retries: 3
+  transfer_retry_interval: 10m
 
 # --------------------------------------------------------------------------
 # Run index (bookkeeping of submit/monitor runs). Default: the SQLite file

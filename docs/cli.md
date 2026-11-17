@@ -364,7 +364,8 @@ globusiri submit [SITE] --job JOB_FILE [--set key=value]... [--input NAME=LOCAL]
 globusiri submit --resume RUN_ID [--no-validate] [--json]
 globusiri monitor [RUN_ID...] [--resume] [--json]
 globusiri daemon [--interval 60] [--once]
-globusiri runs [RUN_ID] [--status active|finished|failed|cancelled|upload_failed|download_failed] [--reindex] [--json]
+globusiri runs [RUN_ID] [--status STATUS] [--reindex] [--json]
+globusiri clean [--older-than 30d] [--status S1,S2] [--remote] [--dry-run] [--json]
 globusiri cancel RUN_ID
 ```
 
@@ -417,20 +418,40 @@ ends in one of two statuses that mark which files are missing:
 | `upload_failed` | The job script or inputs could not be uploaded after `--max-attempts` passes. Nothing was submitted | Uploads again; on success it submits the job and the run continues as usual |
 | `download_failed` | The IRI job finished, but some of its files (stdout/stderr, `https_stageout.files`) could not be downloaded. The failed files are listed in the run's `message` | Downloads only the failed files again (files already here are kept); then cleanup runs if the job file enables it, and the run becomes `finished` |
 
-`monitor` without run IDs and `daemon` skip these runs, so a missing file is not retried
-forever. Retry a run by naming it, once the cause is fixed or after waiting:
+A run named on the command line (`globusiri monitor RUN_ID`) is retried at once. `monitor`
+without run IDs, and the `daemon`, retry each such run once `defaults.transfer_retry_interval`
+(default 10 minutes) has passed since it ended. After `defaults.transfer_retries` retries (default
+3) that failed again, the run becomes `final_upload_failed` or `final_download_failed`. Neither
+form of `monitor` retries it after that. `submit --resume RUN_ID` still reopens it by hand, and
+starts the count again.
 
 ```bash
 globusiri runs --status download_failed          # which runs are missing files
-globusiri monitor 20261117-100957-d231ec         # download the missing files again
+globusiri monitor 20261117-100957-d231ec         # download the missing files again now
+globusiri runs --status final_download_failed    # runs that gave up
 ```
 
 The run's other steps still run: E2E stage-out goes on after a failed download. Cleanup waits
 until the downloads succeed, so the remote files are kept for the retry. If the IRI job itself
 failed, the run is `failed` as before; a failed log download is recorded on the step.
-`plugin_status` reports `upload_failed` as `failed` (nothing ran) and `download_failed` as
-`finished` (the job ran to the end). `submit`, `monitor` and `run` exit with code 6 for both
-statuses.
+`plugin_status` reports `upload_failed` and `final_upload_failed` as `failed` (nothing ran), and
+`download_failed` and `final_download_failed` as `finished` (the job ran to the end). `submit`,
+`monitor` and `run` exit with code 6 for all four statuses.
+
+**Removing old runs.** `globusiri clean` deletes runs that ended long ago:
+
+```bash
+globusiri clean --dry-run                        # list what would go (runs ended 30+ days ago)
+globusiri clean --older-than 7d                  # remove <WORK_DIR>/runs/<run_id>/ and the index row
+globusiri clean --older-than 7d --remote         # also the remote run and log directories (IRI rm)
+globusiri clean --older-than 1d --status final_download_failed,final_upload_failed
+```
+
+By default `clean` removes runs that are `finished`, `failed`, `cancelled`,
+`final_upload_failed` or `final_download_failed`, aged by the time they ended. Runs that are
+`active`, `upload_failed` or `download_failed` (still retried) are kept unless named in
+`--status`. A run that another process is advancing is skipped. With `--remote`, a run whose
+remote directories cannot be removed is kept, so you can try again.
 
 **Retrying a failed run.** `globusiri submit --resume RUN_ID` and `globusiri monitor --resume
 RUN_ID...` reopen a failed run without blocking. The run becomes `active`, its failed steps go

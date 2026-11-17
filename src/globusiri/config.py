@@ -268,6 +268,13 @@ class Config:
         self.globus_client_id = defaults.get("globus_client_id", DEFAULT_GLOBUS_CLIENT_ID)
         self.refresh_min_lifetime = parse_duration(defaults.get("refresh_min_lifetime"), 0)
         self.retries = int(defaults.get("retries", 3))
+        # runs that end upload_failed/download_failed: how many times `monitor` redoes the
+        # transfer before the run becomes final_upload_failed/final_download_failed, and how
+        # long a monitor pass over all runs (or the daemon) waits before each retry
+        self.transfer_retries = int(defaults.get("transfer_retries", 3))
+        self.transfer_retry_interval = parse_duration(defaults.get("transfer_retry_interval"), 600)
+        if self.transfer_retries < 0 or self.transfer_retry_interval < 0:
+            raise ConfigError("defaults.transfer_retries and transfer_retry_interval must be >= 0")
         self.e2e = E2EConfig(raw.get("e2e"))
         self.token_files = raw.get("token_files") or {}
         # run index: SQLite under WORK_DIR by default, or MySQL/MariaDB (database.url)

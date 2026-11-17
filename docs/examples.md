@@ -79,6 +79,15 @@ globusiri runs --status download_failed
 globusiri monitor 20261117-100957-d231ec   # downloads only the files that failed
 ```
 
+`monitor` and the daemon also retry these runs every 10 minutes, at most 3 times
+(`defaults.transfer_retry_interval`, `transfer_retries`). After that the run is
+`final_upload_failed` or `final_download_failed`. Old runs can be removed with `globusiri clean`:
+
+```bash
+globusiri clean --older-than 7d --dry-run
+globusiri clean --older-than 7d --remote   # also the run directories on the HPC
+```
+
 ## Your own job script (no template)
 
 [`perlmutter_script_job.yaml`](../src/globusiri/data/jobs/perlmutter_script_job.yaml) sets

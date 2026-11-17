@@ -617,6 +617,18 @@ class GlobusIRI:
         """Run monitor() every `interval` seconds until stop() returns True. One daemon per WORK_DIR."""
         workflow.daemon(self.config, interval=interval, echo=echo, stop=stop, max_passes=max_passes)
 
+    def clean(self, *, older_than="30d", status=None, remote=False, dry_run=False, echo=None):
+        """Remove runs that ended at least `older_than` ago (a duration such as "7d", or
+        seconds): their run directory under WORK_DIR and index row, and with remote=True
+        their remote run/log directories. status: a status or list (default: finished, failed,
+        cancelled, final_upload_failed, final_download_failed). Returns one dict per run."""
+        statuses = [status] if isinstance(status, str) else status
+        bad = [s for s in statuses or () if s not in workflow.RUN_STATUSES]
+        if bad:
+            raise ConfigError(f"unknown run status: {', '.join(bad)} (known: {', '.join(workflow.RUN_STATUSES)})")
+        return workflow.clean(self.config, older_than=parse_duration(older_than), statuses=statuses,
+                              remote=remote, dry_run=dry_run, echo=echo)
+
     def cancel(self, run_id, *, echo=None):
         """Cancel a run: its IRI job and any running Globus transfer. Returns the state dict."""
         workflow.cancel(self.config, run_id, echo=echo)

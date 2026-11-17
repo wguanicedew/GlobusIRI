@@ -70,6 +70,7 @@ g.job_cleanup("NERSC_Perlmutter", sub["run_id"])
 | `globusiri submit --resume RUN_ID` | `g.reopen(run_id, *, validate=None)` → state dict, then `g.monitor([run_id])`. `reopen` makes a failed run active again (failed steps → pending, done steps kept) without advancing it |
 | — | `g.advance(run_id, *, echo)` → state dict; one pass over one run (raises `workflow.RunBusy` if another process holds it) |
 | `globusiri daemon` | `g.daemon(*, interval=60, echo, stop, max_passes)`; `monitor()` in a loop until `stop()` is true |
+| `globusiri clean` | `g.clean(*, older_than="30d", status=None, remote=False, dry_run=False, echo)` → `[{"run_id", "site", "status", "ended", "result"}]`; removes runs that ended at least `older_than` ago (default statuses: finished, failed, cancelled, final_upload_failed, final_download_failed) |
 | `globusiri cancel RUN_ID` | `g.cancel(run_id, *, echo)` → state dict |
 | `globusiri runs [RUN_ID] [--reindex]` | `g.runs(*, status=None, summary=False, reindex=False)` → full state dicts, or index rows with `summary=True`; `g.run_state(run_id)` → one full state |
 | — | `g.run_state(run_id)` → the saved `state.json` as a dict, plus `plugin_status` |
@@ -113,8 +114,9 @@ for run_id, r in g.monitor([f"worker-{w}" for w in worker_ids]).items():
     if isinstance(r, str):          # busy, or could not be read; try again next cycle
         continue
     status = r["plugin_status"]     # submitted | running | finished | failed | cancelled
-    # r["status"] may also be upload_failed (plugin_status failed) or download_failed
-    # (plugin_status finished); g.monitor([run_id]) redoes that upload/download
+    # r["status"] may also be upload_failed / final_upload_failed (plugin_status failed) or
+    # download_failed / final_download_failed (plugin_status finished); monitor redoes the
+    # upload/download of a non-final one, at once for g.monitor([run_id])
 ```
 
 `plugin_status` uses the same strings as Harvester's `WorkSpec.ST_*`. It stays `running`

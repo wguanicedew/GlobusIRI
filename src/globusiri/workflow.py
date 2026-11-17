@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import posixpath
+import shutil
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -63,15 +64,23 @@ def steps_of(state):
 # run status
 ACTIVE, FINISHED, FAILED, CANCELLED = "active", "finished", "failed", "cancelled"
 # The run stopped because files could not be moved over HTTPS/IRI, after the client's own
-# retries; the rest of the run is fine. `globusiri monitor RUN_ID` (the run named
-# explicitly) redoes only that step, then the run carries on:
+# retries; the rest of the run is fine. `monitor` redoes only that step, then the run
+# carries on:
 #   upload_failed:   the job's inputs/script could not be uploaded, so nothing was submitted;
 #   download_failed: the IRI job finished, but files (logs, outputs) could not be downloaded.
-# A monitor pass over all active runs and the daemon leave them alone.
+# A run named explicitly (`monitor RUN_ID`) is retried at once; a pass over all runs (and the
+# daemon) retries it once config.transfer_retry_interval has passed. After
+# config.transfer_retries retries that failed again, the run becomes final_upload_failed /
+# final_download_failed and is no longer retried (`submit --resume RUN_ID` still reopens it).
 UPLOAD_FAILED, DOWNLOAD_FAILED = "upload_failed", "download_failed"
+FINAL_UPLOAD_FAILED, FINAL_DOWNLOAD_FAILED = "final_upload_failed", "final_download_failed"
 RETRYABLE = {UPLOAD_FAILED: "upload", DOWNLOAD_FAILED: "https_stageout"}
-RUN_TERMINAL = (FINISHED, FAILED, CANCELLED, UPLOAD_FAILED, DOWNLOAD_FAILED)
+FINAL = {UPLOAD_FAILED: FINAL_UPLOAD_FAILED, DOWNLOAD_FAILED: FINAL_DOWNLOAD_FAILED}
+RUN_TERMINAL = (FINISHED, FAILED, CANCELLED, UPLOAD_FAILED, DOWNLOAD_FAILED, FINAL_UPLOAD_FAILED,
+                FINAL_DOWNLOAD_FAILED)
 RUN_STATUSES = (ACTIVE, *RUN_TERMINAL)
+# runs `clean` removes by default: ended, and never retried again by `monitor`
+CLEANABLE = (FINISHED, FAILED, CANCELLED, FINAL_UPLOAD_FAILED, FINAL_DOWNLOAD_FAILED)
 
 # step status that lets the run move on
 STEP_PASSED = ("done", "skipped")
@@ -586,8 +595,7 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
             if raise_errors or (not unlimited and attempts >= max_attempts):
                 state.set(name, "failed", error=str(exc))
                 if name == "upload":
-                    state.finish(UPLOAD_FAILED, f"upload: {exc} (after {attempts} attempts); "
-                                                f"retry with: globusiri monitor {state.run_id}")
+                    _finish_transfer_failed(config, state, UPLOAD_FAILED, f"upload: {exc} (after {attempts} attempts)")
                 else:
                     state.finish(FAILED, f"{name}: {exc} (after {attempts} attempts)")
                 if raise_errors:
@@ -601,10 +609,9 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
     final = _final(ctx)
     if final == jobs.FINISHED and state.step("https_stageout").get("status") == "failed":
         bad = [r for r, v in (state.step("https_stageout").get("files") or {}).items() if str(v).startswith("error")]
-        state.finish(DOWNLOAD_FAILED, f"job finished, but {len(bad)} download(s) failed: {', '.join(bad)}; "
-                                      f"retry with: globusiri monitor {state.run_id}")
-        echo(f"run {state.run_id} {DOWNLOAD_FAILED}: {len(bad)} file(s) not downloaded; "
-             f"retry with: globusiri monitor {state.run_id}")
+        status = _finish_transfer_failed(config, state, DOWNLOAD_FAILED,
+                                         f"job finished, but {len(bad)} download(s) failed: {', '.join(bad)}")
+        echo(f"run {state.run_id} {status}: {len(bad)} file(s) not downloaded")
     elif final == jobs.FINISHED:
         state.finish(FINISHED)
         echo(f"run {state.run_id} finished")
@@ -637,6 +644,26 @@ def advance(config, run_id, *, echo=None, raise_errors=False, wait_lock=False, r
             return _advance_locked(config, state, job, site, echo=echo, raise_errors=raise_errors)
 
 
+def _finish_transfer_failed(config, state, status, message):
+    """End the run upload_failed/download_failed, or final_* once its retries are used up.
+    Returns the status set."""
+    done = int(state.data.get("transfer_retries", 0))
+    if done >= config.transfer_retries:
+        status = FINAL[status]
+        message += f"; gave up after {done} retr{'y' if done == 1 else 'ies'}"
+    else:
+        message += (f"; retry {done + 1}/{config.transfer_retries} with: globusiri monitor {state.run_id} "
+                    f"(a pass over all runs retries it after {config.transfer_retry_interval}s)")
+    state.finish(status, message)
+    return status
+
+
+def _retry_due(config, row):
+    """A pass over all runs retries an upload/download_failed run this long after it ended."""
+    ended = _epoch(row.get("finished_at") or row.get("updated_at"))
+    return ended is None or time.time() - ended >= config.transfer_retry_interval
+
+
 def _reopen_transfer(state, echo):
     """upload_failed / download_failed -> active, with the failed step (and a cleanup that was
     skipped because of it) pending again. Done files are kept: a download retry fetches only
@@ -648,6 +675,7 @@ def _reopen_transfer(state, echo):
     for k in ("attempts", "error"):
         st.pop(k, None)
     st["status"] = "pending"
+    state.data["transfer_retries"] = int(state.data.get("transfer_retries", 0)) + 1
     cleanup = state.step("cleanup")
     if cleanup.get("status") == "skipped" and "not done" in str(cleanup.get("reason")):
         cleanup.pop("reason", None)
@@ -678,13 +706,16 @@ def monitor(config, run_ids=None, *, echo=None):
     single run. Runs given by ID that ended upload_failed/download_failed redo that step.
     Returns {run_id: RunState or error string}."""
     echo = echo or (lambda *a: None)
-    explicit = run_ids is not None  # runs named by the caller: upload/download_failed are retried
-    ids = list(run_ids) if explicit else [
-        r["run_id"] for r in config.run_index().query(status=ACTIVE, oldest_first=True)]
+    explicit = run_ids is not None
+    if explicit:  # runs named by the caller: an upload/download_failed run is retried at once
+        ids = list(run_ids)
+    else:  # every active run, and the upload/download_failed runs whose retry is due
+        ids = [r["run_id"] for r in config.run_index().query(status=[ACTIVE, *RETRYABLE], oldest_first=True)
+               if r["status"] == ACTIVE or _retry_due(config, r)]
     out = {}
     for rid in ids:
         try:
-            out[rid] = advance(config, rid, echo=echo, retry_transfers=explicit)
+            out[rid] = advance(config, rid, echo=echo, retry_transfers=True)
         except RunBusy:
             out[rid] = "busy (another process is advancing it)"
         except Exception as exc:  # keep going with the other runs
@@ -768,9 +799,9 @@ def plugin_status(state_data):
     status = state_data.get("status")
     if status in (FINISHED, FAILED, CANCELLED):
         return status
-    if status == UPLOAD_FAILED:  # nothing ran
+    if status in (UPLOAD_FAILED, FINAL_UPLOAD_FAILED):  # nothing ran
         return FAILED
-    if status == DOWNLOAD_FAILED:  # the job ran to the end; only some files are missing locally
+    if status in (DOWNLOAD_FAILED, FINAL_DOWNLOAD_FAILED):  # the job ran to the end; files are missing locally
         return FINISHED
     if state_data.get("kind") == TRANSFER:
         return "running"
@@ -801,7 +832,7 @@ def run(config, job, site, *, run_id=None, no_wait=False, do_validate=True, stag
         if state.status == ACTIVE:
             echo(f"  not waiting; continue with: globusiri monitor {run_id}")
         return state
-    if state.status in (FAILED, UPLOAD_FAILED, DOWNLOAD_FAILED):
+    if state.status in (FAILED, UPLOAD_FAILED, DOWNLOAD_FAILED, FINAL_UPLOAD_FAILED, FINAL_DOWNLOAD_FAILED):
         raise JobFailed(state.data.get("message") or f"run {run_id} {state.status}")
     return state
 
@@ -816,6 +847,7 @@ def reopen(config, run_id, *, do_validate=None):
         state.data.pop("finished_at", None)
         state.data.pop("message", None)
         state.data.pop("last_error", None)
+        state.data.pop("transfer_retries", None)  # a manual resume starts the count again
         if do_validate is not None:
             state.data.setdefault("options", {})["validate"] = bool(do_validate)
         for st in state.data["steps"].values():
@@ -838,3 +870,49 @@ def resume(config, run_id, *, do_validate=True, **kwargs):
     """Re-open a run (failed steps go back to pending) and continue it in blocking mode."""
     state, job, site = reopen(config, run_id, do_validate=do_validate)
     return run(config, job, site, resume_state=state, **kwargs)
+
+
+# ---------------------------------------------------------------------- housekeeping
+def clean(config, *, older_than, statuses=None, remote=False, dry_run=False, echo=None):
+    """Remove runs that ended more than `older_than` seconds ago.
+
+    statuses: run statuses to remove (default CLEANABLE: finished, failed, cancelled,
+    final_upload_failed, final_download_failed; active runs and runs that `monitor` still
+    retries are never removed unless listed). Removes <WORK_DIR>/runs/<run_id>/ and the
+    index row; with remote, first the remote run (and log) directory via IRI. A run held by
+    another process is skipped. Returns [{"run_id", "site", "status", "ended", "result"}].
+    """
+    echo = echo or (lambda *a: None)
+    statuses = list(statuses or CLEANABLE)
+    index = config.run_index()
+    cutoff = time.time() - older_than
+    out = []
+    for row in index.query(status=statuses, oldest_first=True):
+        ended = row.get("finished_at") or row.get("updated_at")
+        when = _epoch(ended)
+        if when is None or when > cutoff:
+            continue
+        rid = row["run_id"]
+        item = {"run_id": rid, "site": row.get("site"), "status": row.get("status"), "ended": ended}
+        out.append(item)
+        if dry_run:
+            item["result"] = "would remove" + (" (and remote dirs)" if remote else "")
+            continue
+        run_dir = config.paths.run_dir(rid)
+        try:
+            with run_lock(run_dir):
+                if remote:
+                    state, _, site = load(config, rid)
+                    if state.data.get("kind") != TRANSFER:  # a transfer run has no remote run dir
+                        item["remote"] = cleanup_mod.cleanup_run(services.iri_client(config, site), site, rid)
+                shutil.rmtree(run_dir, ignore_errors=True)
+                index.remove(rid)
+            item["result"] = "removed"
+            log.info("clean: run %s (%s, ended %s) removed", rid, row.get("status"), ended)
+        except RunBusy:
+            item["result"] = "busy (another process holds it); kept"
+        except Exception as exc:  # keep going with the other runs
+            log.warning("clean: run %s: %s", rid, exc)
+            item["result"] = f"error: {exc}; kept"
+        echo(f"  {rid}: {item['result']}")
+    return out

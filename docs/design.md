@@ -464,11 +464,15 @@ three modes:
 | Daemon | `globusiri submit`, then `globusiri daemon` (or `g.daemon()`) | the daemon, every `--interval` seconds |
 | Blocking | `globusiri run` / `g.run()` | `run`, in a loop until the run ends |
 
-A run's `status` is `active`, `finished`, `failed`, `cancelled`, `upload_failed`, or
-`download_failed`. `monitor()` picks up only `active` runs. The last two mean the run stopped
-because files could not be uploaded (nothing was submitted) or downloaded (the job finished).
-A run named explicitly, as in `monitor(["RUN_ID"])` or `globusiri monitor RUN_ID`, redoes only
-that step and then continues (`workflow.RETRYABLE`). A step error that cannot be fixed by retrying (failed transfer, failed
+A run's `status` is `active`, `finished`, `failed`, `cancelled`, `upload_failed`,
+`download_failed`, `final_upload_failed`, or `final_download_failed`. `upload_failed` and
+`download_failed` mean the run stopped because files could not be uploaded (nothing was
+submitted) or downloaded (the job finished). `monitor()` redoes only that step and then
+continues (`workflow.RETRYABLE`). A run named explicitly is retried at once; a pass over all
+runs retries it after `defaults.transfer_retry_interval`. After `defaults.transfer_retries`
+failed retries, the run becomes `final_*` and is not retried again. `monitor()` without IDs
+otherwise picks up only `active` runs. `clean()` removes runs that ended long ago
+(`workflow.CLEANABLE` by default). A step error that cannot be fixed by retrying (failed transfer, failed
 validation, config error) fails the run. Any other error is recorded as `last_error`, and the
 step is retried on the next pass, up to `max_attempts` passes in a row. A per-run `flock` on
 `runs/<run_id>/.lock` lets several callers share a WORK_DIR (a daemon, a plugin, the CLI)

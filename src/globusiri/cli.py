@@ -17,7 +17,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import __version__, jobs
+from . import __version__, jobs, workflow
 from . import validate as validation
 from .api import GlobusIRI
 from .api import init as init_work_dir
@@ -341,18 +341,22 @@ def print_runs(runs, as_json=False):
 
 
 def _exit_for(r):
-    from .workflow import DOWNLOAD_FAILED, FAILED, UPLOAD_FAILED
+    from .workflow import CANCELLED, FINISHED
 
-    return JobFailed.exit_code if r["status"] in (FAILED, UPLOAD_FAILED, DOWNLOAD_FAILED) else EXIT_OK
+    return EXIT_OK if r["status"] in ("active", FINISHED, CANCELLED) else JobFailed.exit_code
 
 
 def _retry_hint(runs):
-    from .workflow import RETRYABLE
+    from .workflow import FINAL_DOWNLOAD_FAILED, FINAL_UPLOAD_FAILED, RETRYABLE
 
+    what = {"upload": "upload", "https_stageout": "download"}
     for r in runs:
         if r.get("status") in RETRYABLE:
-            print(f"{r['run_id']}: {r['status']}; retry the {RETRYABLE[r['status']].replace('https_', '')} "
-                  f"with: globusiri monitor {r['run_id']}")
+            print(f"{r['run_id']}: {r['status']}; retry the {what[RETRYABLE[r['status']]]} now with: "
+                  f"globusiri monitor {r['run_id']}")
+        elif r.get("status") in (FINAL_UPLOAD_FAILED, FINAL_DOWNLOAD_FAILED):
+            print(f"{r['run_id']}: {r['status']}; no more automatic retries "
+                  f"(reopen with: globusiri submit --resume {r['run_id']}, or remove with: globusiri clean)")
 
 
 def cmd_submit(args, api):
@@ -398,6 +402,21 @@ def cmd_monitor(args, api):
         if not isinstance(r, dict):
             print(f"{rid}: {r}", file=sys.stderr)
     return EXIT_OK
+
+
+def cmd_clean(args, api):
+    statuses = [s.strip() for s in args.status.split(",") if s.strip()] if args.status else None
+    rows = api.clean(older_than=args.older_than, status=statuses, remote=args.remote, dry_run=args.dry_run,
+                     echo=None)
+    if args.json:
+        print_json(rows)
+        return EXIT_OK
+    if not rows:
+        print(f"no runs ended more than {args.older_than} ago")
+        return EXIT_OK
+    print(table([[r["run_id"], r["site"], r["status"], r["ended"], r["result"]] for r in rows],
+                ["RUN_ID", "SITE", "STATUS", "ENDED", "RESULT"]))
+    return EXIT_OK if not any(str(r["result"]).startswith("error") for r in rows) else 1
 
 
 def cmd_daemon(args, api):
@@ -633,13 +652,23 @@ def build_parser():
 
     s = sub.add_parser("runs", parents=[common], help="list workflow runs, or show one")
     s.add_argument("run_id", nargs="?", metavar="RUN_ID")
-    s.add_argument("--status", choices=["active", "finished", "failed", "cancelled", "upload_failed",
-                                        "download_failed"])
+    s.add_argument("--status", choices=list(workflow.RUN_STATUSES))
     s.add_argument("--reindex", action="store_true", help="rebuild the central index from saved run states")
     s.add_argument("--json", action="store_true")
 
     s = sub.add_parser("cancel", parents=[common], help="cancel a run's IRI job and running transfers")
     s.add_argument("run_id", metavar="RUN_ID")
+
+    s = sub.add_parser("clean", parents=[common], help="remove old runs from WORK_DIR (and optionally the HPC)")
+    s.add_argument("--older-than", default="30d", metavar="AGE",
+                   help="remove runs that ended at least this long ago (e.g. 12h, 7d; default 30d)")
+    s.add_argument("--status", metavar="S1,S2",
+                   help="statuses to remove (default: " + ",".join(workflow.CLEANABLE) + "); runs still "
+                        "active or waiting for a transfer retry are kept unless listed here")
+    s.add_argument("--remote", action="store_true",
+                   help="also remove each run's remote run and log directories (IRI rm)")
+    s.add_argument("--dry-run", action="store_true", help="list the runs that would be removed")
+    s.add_argument("--json", action="store_true")
     return p
 
 
@@ -658,7 +687,7 @@ def dispatch(args, paths):
         return cmd_fs(args, api)
     if group == "run":
         return cmd_run(args, api)
-    if group in ("submit", "monitor", "daemon", "runs", "cancel"):
+    if group in ("submit", "monitor", "daemon", "runs", "cancel", "clean"):
         return globals()[f"cmd_{group}"](args, api)
     if group == "https" and action in ("stagein", "stageout"):
         return cmd_https_stage(args, api)
