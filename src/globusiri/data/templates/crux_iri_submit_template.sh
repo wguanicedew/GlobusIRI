@@ -124,6 +124,7 @@ export ATHENA_CORE_NUMBER=$((256 / (HARVESTER_TASKS_PER_NODE)))
 # export wrapper_wrapper_file=$HARVESTER_DIR/etc/panda/wrapper-wrapper-3.sh
 # export wrapper_wrapper_file=/global/cfs/cdirs/m2616/harvester_workdir/pilot_env/wrapper-wrapper-3.sh
 # export wrapper_wrapper_file=/lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/pilot_env/alcf_wrapper-wrapper-3.sh
+# A copy of this wrapper is also kept in the repo: src/globusiri/data/templates/alcf_wrapper-wrapper-3.sh
 export wrapper_wrapper_file=/lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/pilot_env/harvester_HPC/alcf_wrapper-wrapper-3.sh
 
 echo [$(date -u "+%m-%d-%y %H:%M:%S %Z")] "Copy $wrapper_wrapper_file into $HARVESTER_ACCESS_POINT"

@@ -78,6 +78,7 @@ export ATHENA_CORE_NUMBER=$((256 / (HARVESTER_TASKS_PER_NODE)))
 
 #DPB_shifter export wrapper_wrapper_file=$HARVESTER_DIR/etc/panda/wrapper-wrapper-3-shifter.sh
 # export wrapper_wrapper_file=$HARVESTER_DIR/etc/panda/wrapper-wrapper-3.sh
+# A copy of this wrapper is also kept in the repo: src/globusiri/data/templates/nersc_wrapper-wrapper-3.sh
 export wrapper_wrapper_file=/global/cfs/cdirs/m2616/harvester_workdir/pilot_env/harvester_HPC/nersc_wrapper-wrapper-3.sh
 
 echo [$(date -u "+%m-%d-%y %H:%M:%S %Z")] "Copy $wrapper_wrapper_file into $HARVESTER_ACCESS_POINT"
