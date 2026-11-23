@@ -266,3 +266,39 @@ def test_iri_and_https_login_require_site_domains(cfg, monkeypatch):
     manager("https", cfg, site).login(force=True, prompt_login=True)
     # fresh login on the first domain step, never on the token step (it would drop the identities)
     assert order == [("sessions", ["nersc.gov"], True), ("token", False)] * 2
+
+
+def test_panda_set_client_replaces_pandaclient(cfg):
+    from globusiri.errors import PandaError
+
+    store, calls = {}, []
+
+    class AppClient:
+        def set_user_secret(self, key, value):
+            calls.append(("set", key))
+            store[key] = value
+            return 0, (True, "ok")
+
+        def get_user_secrets(self):
+            calls.append(("get",))
+            return 0, (True, dict(store))
+
+    panda_secrets.set_client(AppClient())
+    try:
+        m = manager("e2e", cfg)
+        write_access(m.access_file, client_id="c")
+        m.upload_to_panda()
+        m.access_file.unlink()
+        assert m.download_from_panda()["access_token"] == "TOKEN-SECRET-123"
+        assert calls == [("set", "USATLAS_HPC_TRANSFER_TOKEN"), ("get",)]
+
+        class Failing:
+            def get_user_secrets(self):
+                return 0, (False, "permission denied")
+
+        panda_secrets.set_client(Failing())
+        with pytest.raises(PandaError, match="permission denied"):
+            panda_secrets.get_secret("K")
+    finally:
+        panda_secrets.set_client(None)
+    assert panda_secrets._client_override is None

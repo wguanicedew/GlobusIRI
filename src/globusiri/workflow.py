@@ -463,6 +463,15 @@ def _step_monitor(ctx):
     return False
 
 
+def download_dir(config, job, run_id):
+    """Local directory of a run's HTTPS downloads: staging.https_stageout.local_dir (relative to
+    WORK_DIR, `{run_id}` replaced), else the run directory."""
+    spec = job.https_stageout.get("local_dir")
+    if not spec:
+        return config.paths.run_dir(run_id)
+    return config.paths.resolve(str(spec).replace("{run_id}", run_id))
+
+
 def _step_https_stageout(ctx):
     if not (ctx.job.wants_https_download() and ctx.https is not None):
         ctx.state.set("https_stageout", "skipped", reason="job does not download over HTTPS")
@@ -471,12 +480,13 @@ def _step_https_stageout(ctx):
         _, ctx.report = jobs.status(ctx.iri, ctx.site, ctx.state.step("submit")["job_id"])
     h = ctx.job.https_stageout
     files = h.get("files") or []
+    local_dir = download_dir(ctx.config, ctx.job, ctx.run_id)
     if h.get("stdout_stderr"):
-        res = https_staging.stageout_job_logs(ctx.https, ctx.report, ctx.site, ctx.state.run_dir, run_id=ctx.run_id,
+        res = https_staging.stageout_job_logs(ctx.https, ctx.report, ctx.site, local_dir, run_id=ctx.run_id,
                                               extra_files=files)
     else:
         remote_dir = _submission(ctx).remote_dir
-        res = https_staging.stageout(ctx.https, [posixpath.join(remote_dir, f) for f in files], ctx.state.run_dir)
+        res = https_staging.stageout(ctx.https, [posixpath.join(remote_dir, f) for f in files], local_dir)
     # files downloaded by an earlier pass stay "skipped" (already here) on a retry
     previous = ctx.state.step("https_stageout").get("files") or {}
     res = {k: (previous[k] if v == "skipped" and k in previous and not str(previous[k]).startswith("error") else v)

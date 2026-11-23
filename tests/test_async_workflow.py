@@ -10,6 +10,8 @@
 """Non-blocking workflow: submit once, then each monitor() pass checks the current step
 and triggers the next (plugin mode); daemon() repeats the passes."""
 
+import os
+
 import pytest
 
 from globusiri import services, workflow
@@ -464,3 +466,19 @@ def test_clean_old_runs(env, monkeypatch):
     assert [r["run_id"] for r in rows] == ["old-dl"]
     with pytest.raises(ConfigError, match="unknown run status"):
         g.clean(older_than=0, status="done")
+
+
+def test_https_stageout_local_dir(env, tmp_path):
+    g, iri, gl = env
+    dest = tmp_path / "worker_logs" / "{run_id}"
+    r = g.submit("perlmutter_hello_job.yaml", run_id="L1", validate=False,
+                 set=["staging.https_stageout={stdout_stderr: true, files: [result.txt]}",
+                      f"staging.https_stageout.local_dir='{dest}'"])
+    iri.states = ["completed"]
+    r = g.monitor(["L1"])["L1"]
+    assert r["status"] == "finished", r.get("message")
+    local = r["steps"]["https_stageout"]["files"].values()
+    want = tmp_path / "worker_logs" / "L1"
+    assert len(local) == 3 and all(os.path.dirname(p) == str(want) and os.path.isfile(p) for p in local)
+    assert any(p.endswith("/result.txt") for p in local)
+    assert not any(g.config.paths.run_dir("L1").glob("*.txt"))

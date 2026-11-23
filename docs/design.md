@@ -127,6 +127,9 @@ Packaging details:
 - Python 3.9 or newer.
 - Dependencies: `globus-sdk>=4,<5`, `requests`, `PyYAML`, and `platformdirs`. The optional
   `panda` extra adds `panda-client`.
+  An embedding application that already has a PanDA connection (e.g. Harvester, with the
+  server URL and x509/OIDC credentials of its `[pandacon]`) passes it with
+  `globusiri.panda_secrets.set_client(client)`; panda-client is then not used.
 - The example config (`globusiri/data/sites.example.yaml`), the example job files
   (`globusiri/data/jobs/*_example_job.yaml`), and the batch templates
   (`globusiri/data/templates/*.sh`) ship inside the wheel as package data.
@@ -192,7 +195,7 @@ src/globusiri/
   jobfile.py           # load job files, merge job_defaults < job file < --set, snapshot
   validate.py          # per-kind token checks (offline + live), shared by validate/refresh/run
   secure_io.py         # atomic 0600 writes, flat YAML read/write, redaction helpers
-  panda_secrets.py     # set/get PanDA user secrets (pandaclient), JSON payloads
+  panda_secrets.py     # set/get PanDA user secrets (pandaclient, or set_client()), JSON payloads
   tokens/
     base.py            # TokenManager: login / refresh / upload_to_panda / download_from_panda / status
     iri.py             # facility IRI tokens (NERSC, ALCF client IDs and scopes)
