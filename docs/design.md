@@ -288,7 +288,7 @@ class TokenManager:
 - **refresh.** Refreshes using the stored refresh token. To be compatible with older token
   files, it tries both known client IDs. It extracts the facility token and writes
   `tokens/iri/<facility>.access.yaml` (`base_url`, `resource_id`, `access_token`, `expires_at`). It then
-  optionally validates the token: NERSC calls `GET /api/v1/account/projects` and ALCF calls a
+  optionally validates the token: NERSC calls `GET /api/<api_version>/account/projects` and ALCF calls a
   filesystem `ls` on Home. If no refresh token is usable, it never prompts and exits with code
   `3`, so cron can alert on it.
 - **upload_to_panda / download_from_panda.** Send the access token to, or fetch it from,

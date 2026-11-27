@@ -189,11 +189,12 @@ Then check the new site with `globusiri validate <SITE>`. Copy an example job fi
 | Key | Description | Harvester queueconfig equivalent |
 |---|---|---|
 | `base_url` | IRI API root | `--base_url` in `cron.sh` |
+| `api_version` | IRI API version, `v1` or `v2`. Default: `v2` for `facility: alcf`, `v1` for `facility: nersc`. v1 (`/api/v1`) sends filesystem `stat`/`ls`/`download` as GET and `rm` as DELETE with query parameters, and `chmod` as PUT. v2 (`/api/v2`) sends all of them as POST with a JSON body. Compute, `mkdir`, `upload` and task calls differ only in the prefix | — |
 | `resource_id` | Compute resource | `iri_resource_id` |
 | `panda_secret_key` | Name of the PanDA secret | `--panda_secret_key` |
 | `validate` | Make a validation call after `refresh` | `--validate-iri` |
 | `session_domains` | Identity domains (e.g. `[nersc.gov]`) that `iri login` makes you log in with, one URL per domain, before it requests the token. Default: none | — |
-| `validate_url` | Optional. Overrides the validation URL (default: NERSC `account/projects`; ALCF filesystem `ls` on Home) | `--iri-validate-url` |
+| `validate_url` | Optional. Overrides the validation URL, sent as GET (default: NERSC `account/projects`; ALCF filesystem `ls` on Home: `GET ?path=` with `api_version: v1`, `POST {"path": ...}` with v2) | `--iri-validate-url` |
 | `validate_resource_id`, `validate_path` | Optional. ALCF only: resource and path for the default `ls` (default: Home, `/home/$USER/`) | `--alcf-validate-resource-id`, `--alcf-validate-path` |
 | `debug` | Print redacted request traces | `iri_debug` |
 | `sfapi_retries` | Attempts per IRI call while NERSC answers `Unable to get sfapi data` (default `3`; at least 1) | — |

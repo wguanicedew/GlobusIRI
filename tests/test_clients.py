@@ -31,10 +31,10 @@ def no_sleep(monkeypatch):
         monkeypatch.setattr(mod.time, "sleep", lambda s: None)
 
 
-def make_iri(tmp_path, responses, debug=False):
+def make_iri(tmp_path, responses, debug=False, api_version="v1"):
     write_access(tmp_path / "iri.yaml")
     client = IriClient("https://api.example", TokenSource(tmp_path / "iri.yaml", label="IRI", fix="fix"),
-                       resource_id="rid", debug=debug)
+                       resource_id="rid", debug=debug, api_version=api_version)
     client.session = FakeSession(responses)
     return client
 
@@ -46,6 +46,58 @@ def test_iri_retries_5xx_then_succeeds(tmp_path):
     method, url, kw = c.session.calls[-1]
     assert method == "POST" and url == "https://api.example/api/v1/compute/job/rid"
     assert kw["headers"]["Authorization"] == "Bearer TOKEN-SECRET-123"
+
+
+DONE = {"status": "completed", "result": {}}
+
+
+@pytest.mark.parametrize("version,call,method,params,body", [
+    ("v1", lambda c: c.stat("/p", dereference=True), "GET", {"path": "/p", "dereference": "true"}, None),
+    ("v2", lambda c: c.stat("/p", dereference=True), "POST", None, {"path": "/p", "dereference": True}),
+    ("v1", lambda c: c.ls("/p", show_hidden=True), "GET", {"path": "/p", "showHidden": "true"}, None),
+    ("v2", lambda c: c.ls("/p", show_hidden=True), "POST", None, {"path": "/p", "showHidden": True}),
+    ("v1", lambda c: c.rm("/p"), "DELETE", {"path": "/p"}, None),
+    ("v2", lambda c: c.rm("/p"), "POST", None, {"path": "/p"}),
+    ("v1", lambda c: c.chmod("/p", "0755"), "PUT", None, {"path": "/p", "mode": "0755"}),
+    ("v2", lambda c: c.chmod("/p", "0755"), "POST", None, {"path": "/p", "mode": "0755"}),
+    ("v1", lambda c: c.mkdir("/p", parents=True), "POST", None, {"path": "/p", "parent": True}),
+    ("v2", lambda c: c.mkdir("/p", parents=True), "POST", None, {"path": "/p", "parent": True}),
+])
+def test_iri_filesystem_request_per_api_version(tmp_path, version, call, method, params, body):
+    c = make_iri(tmp_path, [FakeResponse(200, DONE)], api_version=version)
+    call(c)
+    m, url, kw = c.session.calls[0]
+    assert m == method and url.startswith(f"https://api.example/api/{version}/filesystem/") and url.endswith("/rid")
+    assert kw.get("params") == params and kw.get("json") == body
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_iri_compute_urls_per_api_version(tmp_path, version):
+    c = make_iri(tmp_path, [FakeResponse(200, {"id": "J1"}), FakeResponse(200, {"id": "J1"}),
+                            FakeResponse(204)], api_version=version)
+    c.launch_job({"a": 1})
+    c.get_job("J1")
+    c.cancel_job("J1")
+    api = f"https://api.example/api/{version}/compute"
+    assert [(m, u) for m, u, _ in c.session.calls] == [
+        ("POST", f"{api}/job/rid"), ("GET", f"{api}/status/rid/J1"), ("DELETE", f"{api}/cancel/rid/J1")]
+
+
+def test_iri_download_v2_posts_json(tmp_path):
+    c = make_iri(tmp_path, [FakeResponse(200, content=b"data", headers={"Content-Type": "application/octet-stream"})],
+                 api_version="v2")
+    c.download("/r/out.txt", tmp_path / "out.txt")
+    m, url, kw = c.session.calls[0]
+    assert (m, url) == ("POST", "https://api.example/api/v2/filesystem/download/rid")
+    assert kw["json"] == {"path": "/r/out.txt"} and not kw.get("params")
+    assert (tmp_path / "out.txt").read_bytes() == b"data"
+
+
+def test_iri_unknown_api_version(tmp_path):
+    from globusiri.errors import ConfigError
+
+    with pytest.raises(ConfigError, match="api_version"):
+        make_iri(tmp_path, [], api_version="v3")
 
 
 def test_iri_4xx_retried_after_sleep_then_fails(tmp_path):

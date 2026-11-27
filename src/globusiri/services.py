@@ -19,7 +19,8 @@ from .tokens import E2ETokenManager, HttpsTokenManager, IriTokenManager
 def iri_client(config, site, *, debug=None):
     mgr = IriTokenManager(config, site)
     source = TokenSource(mgr.access_file, label=f"IRI ({site.facility})", fix=mgr.fix("refresh"))
-    return IriClient(site.base_url, source, resource_id=site.resource_id, retries=config.retries,
+    return IriClient(site.base_url, source, resource_id=site.resource_id, api_version=site.iri_api_version,
+                     retries=config.retries,
                      sfapi_retries=site.iri_sfapi_retries, sfapi_retry_sleep=site.iri_sfapi_retry_sleep,
                      retry_attempts=site.iri_retries, retry_sleep=site.iri_retry_sleep,
                      debug=site.iri_debug if debug is None else debug)

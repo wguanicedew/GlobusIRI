@@ -258,3 +258,15 @@ def test_run_uploads_each_input_without_archive(cfg, monkeypatch, work):
     workflow.run(cfg, job, site, run_id="R9", do_validate=False, interval=0, echo=lambda *a: None)
     remote_dir = "/lus/eagle/projects/ATLAS_workflow_ALCF/usatlas/IRI_workdir/jobs/R9"
     assert [p[1] for p in https.puts] == [f"{remote_dir}/executable_batch", f"{remote_dir}/pandaTokenFilename"]
+
+
+def test_iri_validate_request_per_api_version(cfg, monkeypatch):
+    monkeypatch.setenv("USER", "me")
+    nersc, alcf = cfg.sites["NERSC_Perlmutter"], cfg.sites["ALCF_CRUX"]
+    assert V.iri_validate_request(nersc) == ("GET", "https://api.iri.nersc.gov/api/v1/account/projects", None)
+    method, url, body = V.iri_validate_request(alcf)
+    assert method == "POST" and url.startswith("https://api.alcf.anl.gov/api/v2/filesystem/ls/")
+    assert "?" not in url and body == {"path": "/home/me/"}
+    alcf.iri_api_version = "v1"
+    method, url, body = V.iri_validate_request(alcf)
+    assert method == "GET" and "/api/v1/filesystem/ls/" in url and url.endswith("?path=/home/me/") and body is None

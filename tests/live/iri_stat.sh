@@ -6,6 +6,7 @@
 # Token: $IRI_TOKEN, else access_token from <WORK_DIR>/tokens/iri/nersc.access.yaml
 #        (refresh it first with: globusiri iri refresh NERSC_Perlmutter).
 # Override with $IRI_BASE_URL / $IRI_RESOURCE_ID (defaults: NERSC Perlmutter, as in sites.yaml).
+# $IRI_API_VERSION: v1 (default; GET ?path=) or v2 (ALCF; POST with a JSON body {"path": ...}).
 #
 # The filesystem calls are asynchronous: the reply is {"task_id": ..., "task_uri": ...}, and the
 # result comes from polling GET task_uri until its status is completed, failed or canceled
@@ -20,6 +21,8 @@ set -euo pipefail
 TARGET=${1:-/global/cfs/cdirs/m2616/www/PanDA_logs/IRI}
 BASE_URL=${IRI_BASE_URL:-https://api.iri.nersc.gov}
 RESOURCE_ID=${IRI_RESOURCE_ID:-59e80c79-4dfd-4c53-9c07-7405685fcd37}
+API_VERSION=${IRI_API_VERSION:-v1}
+[[ $API_VERSION == v1 || $API_VERSION == v2 ]] || { echo "IRI_API_VERSION must be v1 or v2" >&2; exit 1; }
 TASK_POLL_INTERVAL=${TASK_POLL_INTERVAL:-5}
 TASK_MAX_POLLS=${TASK_MAX_POLLS:-60}
 SFAPI_RETRIES=${SFAPI_RETRIES:-3}
@@ -49,7 +52,7 @@ print(v if isinstance(v, str) else json.dumps(v))' "$1"
 
 pretty() { python3 -m json.tool 2>/dev/null || cat; }
 
-# http GET URL [curl args...]: sets CODE and BODY
+# http URL [curl args...]: GET (-G turns --data-urlencode into query parameters); sets CODE and BODY
 http() {
     local url=$1 out
     shift
@@ -58,14 +61,32 @@ http() {
     BODY=${out%$'\n'*}
 }
 
-# fs_once OP: GET <base>/api/v1/filesystem/OP/<resource_id>?path=TARGET, then follow its task.
+# http_post_json URL JSON: POST JSON; sets CODE and BODY
+http_post_json() {
+    local out
+    out=$(curl -sS -X POST -w '\n%{http_code}' -H "Authorization: Bearer $IRI_TOKEN" -H "Accept: application/json" \
+        -H "Content-Type: application/json" --data "$2" "$1")
+    CODE=${out##*$'\n'}
+    BODY=${out%$'\n'*}
+}
+
+# fs_once OP: v1 GET <base>/api/v1/filesystem/OP/<resource_id>?path=TARGET, v2 POST
+# <base>/api/v2/filesystem/OP/<resource_id> {"path": TARGET}; then follow its task.
 # Returns 0 when the call (and its task) completed. Sets SFAPI_FAILED when it failed with
 # the transient NERSC sfapi error.
 fs_once() {
     local op=$1 task_id task_uri status i
     TASK_FAILED= SFAPI_FAILED=
-    echo ">>> GET $BASE_URL/api/v1/filesystem/$op/$RESOURCE_ID?path=$TARGET"
-    http "$BASE_URL/api/v1/filesystem/$op/$RESOURCE_ID" --data-urlencode "path=$TARGET"
+    local url=$BASE_URL/api/$API_VERSION/filesystem/$op/$RESOURCE_ID
+    if [[ $API_VERSION == v2 ]]; then
+        local body
+        body=$(python3 -c 'import json, sys; print(json.dumps({"path": sys.argv[1]}))' "$TARGET")
+        echo ">>> POST $url $body"
+        http_post_json "$url" "$body"
+    else
+        echo ">>> GET $url?path=$TARGET"
+        http "$url" --data-urlencode "path=$TARGET"
+    fi
     echo "HTTP $CODE"
     printf '%s\n' "$BODY" | pretty
     if [[ $CODE != 2?? ]]; then

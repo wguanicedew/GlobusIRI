@@ -27,6 +27,8 @@ from .paths import Paths
 
 DEFAULT_GLOBUS_CLIENT_ID = "165ae151-86aa-430a-8251-ce565e51998f"  # USATLAS_HPC_Globus
 FACILITIES = ("nersc", "alcf")
+IRI_API_VERSIONS = ("v1", "v2")
+DEFAULT_IRI_API_VERSION = {"nersc": "v1", "alcf": "v2"}
 UPLOAD_METHODS = ("iri", "globus_https")
 
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$")
@@ -169,6 +171,12 @@ class Site:
         self.resource_id = iri.get("resource_id")
         if not self.base_url or not self.resource_id:
             raise ConfigError(f"sites.{name}.iri needs base_url and resource_id")
+        # IRI API version: v1 (/api/v1, filesystem reads as GET with query parameters) or v2
+        # (/api/v2, filesystem calls as POST with a JSON body). Default: ALCF v2, NERSC v1
+        self.iri_api_version = str(iri.get("api_version") or DEFAULT_IRI_API_VERSION[self.facility]).lower()
+        if self.iri_api_version not in IRI_API_VERSIONS:
+            raise ConfigError(f"sites.{name}.iri.api_version must be one of {IRI_API_VERSIONS}, "
+                              f"not '{iri.get('api_version')}'")
         self.iri_panda_secret_key = iri.get("panda_secret_key")
         self.iri_validate = bool(iri.get("validate", True))
         self.iri_debug = bool(iri.get("debug", False))

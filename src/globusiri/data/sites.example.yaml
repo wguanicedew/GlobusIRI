@@ -101,6 +101,7 @@ sites:
     iri:
       # tokens: <WORK_DIR>/tokens/iri/nersc.{refresh.json,access.yaml}
       base_url: https://api.iri.nersc.gov
+      api_version: v1                   # IRI API version: v1 or v2 (default: nersc v1, alcf v2)
       resource_id: 59e80c79-4dfd-4c53-9c07-7405685fcd37
       panda_secret_key: NERSC_IRI_ACCESS   # JSON payload (bare-token secrets still readable)
       session_domains: [nersc.gov]      # `iri login` asks for a login per domain first
@@ -160,6 +161,7 @@ sites:
     iri:
       # tokens: <WORK_DIR>/tokens/iri/alcf.{refresh.json,access.yaml}
       base_url: https://api.alcf.anl.gov
+      api_version: v2                   # /api/v2: filesystem calls are POST with a JSON body
       resource_id: 8b9b42f7-572a-4909-8472-a0453436304c
       panda_secret_key: ALCF_IRI_ACCESS
       session_domains: [alcf.anl.gov]

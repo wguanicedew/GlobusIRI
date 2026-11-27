@@ -102,32 +102,38 @@ def file_checks(mgr, site_name, min_lifetime=0):
 
 
 # ---------------------------------------------------------------------- live: iri
-def iri_validate_url(site):
+def iri_validate_request(site):
+    """(method, url, json_body) of the validation call: iri.validate_url (GET) if set; NERSC
+    account/projects; ALCF filesystem ls on Home (v1: GET ?path=, v2: POST {"path": ...})."""
     iri = site.iri
     if iri.get("validate_url"):
-        return iri["validate_url"]
+        return "GET", iri["validate_url"], None
+    api = f"{site.base_url}/api/{site.iri_api_version}"
     if site.facility == "nersc":
-        return f"{site.base_url}/api/v1/account/projects"
+        return "GET", f"{api}/account/projects", None
     rid = iri.get("validate_resource_id") or ALCF_HOME_RESOURCE_ID
     path = iri.get("validate_path") or f"/home/{os.environ.get('USER') or os.environ.get('LOGNAME') or ''}/"
-    return f"{site.base_url}/api/v1/filesystem/ls/{quote(rid, safe='')}?{urlencode({'path': path}, quote_via=quote, safe='/')}"
+    url = f"{api}/filesystem/ls/{quote(rid, safe='')}"
+    if site.iri_api_version == "v2":
+        return "POST", url, {"path": path}
+    return "GET", f"{url}?{urlencode({'path': path}, quote_via=quote, safe='/')}", None
 
 
 def iri_api_check(config, site):
     fix = f"globusiri iri login {site.name} --force"
-    url = iri_validate_url(site)
+    method, url, body = iri_validate_request(site)
     short = url.replace(site.base_url, "")
     try:
         client = services.iri_client(config, site)
-        resp = client.get_url(url)
+        resp = client.get_url(url, method=method, json_body=body)
     except LoginRequired as exc:
         return Check(site.name, "iri", "api", FAIL, str(exc.args[0]), exc.fix or fix)
     except GlobusIriError as exc:
         return Check(site.name, "iri", "api", FAIL, str(exc))
     if resp.status_code in (401, 403):
-        return Check(site.name, "iri", "api", FAIL, f"GET {short} -> {resp.status_code} (token rejected)", fix)
+        return Check(site.name, "iri", "api", FAIL, f"{method} {short} -> {resp.status_code} (token rejected)", fix)
     if not resp.ok:
-        return Check(site.name, "iri", "api", FAIL, f"GET {short} -> {resp.status_code}: {resp.text[:200]}")
+        return Check(site.name, "iri", "api", FAIL, f"{method} {short} -> {resp.status_code}: {resp.text[:200]}")
     try:
         body = resp.json()
     except ValueError:
@@ -136,9 +142,9 @@ def iri_api_check(config, site):
         auths = (body.get("session_info") or {}).get("authentications") if isinstance(body.get("session_info"), dict) else None
         if isinstance(auths, dict) and not auths:
             return Check(site.name, "iri", "api", WARN,
-                         f"GET {short} -> {resp.status_code} but session_info.authentications is empty "
+                         f"{method} {short} -> {resp.status_code} but session_info.authentications is empty "
                          "(log in again in a private browser window)", fix)
-    return Check(site.name, "iri", "api", OK, f"GET {short} -> {resp.status_code}")
+    return Check(site.name, "iri", "api", OK, f"{method} {short} -> {resp.status_code}")
 
 
 def iri_workdir_check(config, site):

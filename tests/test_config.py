@@ -139,3 +139,24 @@ def test_iri_and_https_retry_settings(work):
     site_raw["https"]["retries"] = 0
     with pytest.raises(ConfigError, match="https.retries must be >= 1"):
         Config(raw, paths=work)
+
+
+def test_iri_api_version_defaults_by_facility(work):
+    import yaml
+
+    raw = yaml.safe_load(work.default_config.read_text())
+    for site in raw["sites"].values():
+        site["iri"].pop("api_version", None)
+    c = Config(raw, path=work.default_config, paths=work)
+    assert c.sites["NERSC_Perlmutter"].iri_api_version == "v1"
+    assert c.sites["ALCF_CRUX"].iri_api_version == "v2"
+    raw["sites"]["ALCF_CRUX"]["iri"]["api_version"] = "V1"
+    assert Config(raw, path=work.default_config, paths=work).sites["ALCF_CRUX"].iri_api_version == "v1"
+    raw["sites"]["ALCF_CRUX"]["iri"]["api_version"] = "v3"
+    with pytest.raises(ConfigError, match="api_version"):
+        Config(raw, path=work.default_config, paths=work)
+
+
+def test_example_sites_api_versions(cfg):
+    assert cfg.sites["NERSC_Perlmutter"].iri_api_version == "v1"
+    assert cfg.sites["ALCF_CRUX"].iri_api_version == "v2"
