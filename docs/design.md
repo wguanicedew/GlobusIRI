@@ -676,39 +676,92 @@ e2e:
 | 7 | Token validation failed (`validate`, or `refresh` with validation) |
 
 Retries: IRI and HTTPS calls retry 3 times with exponential backoff, but only on connection
-errors and HTTP 429/5xx. A 4xx is never retried. IRI async filesystem tasks keep the existing
+errors and HTTP 429/5xx; a 4xx is never resent quickly (see 9.1 for the slower retries). IRI async filesystem tasks keep the existing
 `task_id` polling (5 seconds × 60). The exception is NERSC's transient
 `Unable to get sfapi data: 403`, which arrives as an HTTP error (often 403 or 404) or as the
 result of a failed task. The whole IRI call (request and task) is sent again after
 3 seconds, and it fails with `SfapiUnavailable` (a `RemoteError`, not `LoginRequired`) only
 after 3 attempts in a row get it (site settings `iri.sfapi_retry_sleep`, `iri.sfapi_retries`).
 
-Other failed calls get a slower retry on top of the quick resends. They include any HTTP
-error, a failed IRI task, or an HTTPS 404 for a file that the collection does not see yet
-just after the job ends. The call is tried again after `retry_sleep` (default 10 s), up to
-`retries` attempts (default 3), set per site under `iri:` and `https:`. Some answers are
-final and never retried:
+Other failed calls get a slower retry on top of the quick resends. They include an HTTP
+error the API did not reject outright, a failed IRI task, or an HTTPS 404 for a file that the
+collection does not see yet just after the job ends. The call is tried again after
+`retry_sleep` (default 10 s), up to `retries` attempts (default 3), set per site under `iri:`
+and `https:`. After that the workflow gets the error and, unless it is final, tries the step
+again on its next pass, up to `max_attempts` passes (default 5; no limit in `monitor`).
 
-- IRI HTTP 404 and "No such file or directory", since cleanup treats a missing path as
-  already removed;
-- 401/403 token errors;
-- requests the IRI API rejected (`RequestRejected`, a `RemoteError`). Both the NERSC
-  (`/api/v1`) and ALCF (`/api/v2`) OpenAPI specs return every error as an RFC 9457 `Problem`
-  with the same codes: 400 (invalid request parameters), 405, 422 and 501 (not implemented).
-  These mean the request itself was refused, and sending it again gets the same answer. Job
-  submission also treats 404 (unknown resource) and 409 (a conflicting submission) as
-  rejections. A typical case is sbatch refusing the job, for example "More resources
-  requested than allowed for logical queue ..." or "your balance is 0.00 node hours ...
-  Cannot proceed". The workflow fails the run at once instead of resubmitting it
-  `max_attempts` times. In the `monitor` step it keeps retrying, because the job exists.
+IRI job submission is retried by the client only on the sfapi error, because an accepted job
+whose reply was lost would otherwise be submitted twice. This applies to every IRI call,
+including job submission: the error means NERSC did not get as far as acting on the request.
+A transient submission error (for example a 503) is still retried by the workflow on its next
+pass, which is where the caveat in section 5.1a comes from.
 
-Treated as transient (the quick resends, then `retry_sleep`, then the workflow's
-`max_attempts` passes): connection errors, 429, 500, 502, 503, 504, a failed IRI task, and 409
-outside job submission.
+### 9.1 IRI error codes
 
-IRI job submission is retried only on the sfapi error, because an accepted job whose reply
-was lost would otherwise be submitted twice. This applies to every IRI call, including job submission:
-the error means NERSC did not get as far as acting on the request.
+Both the NERSC (`/api/v1`) and ALCF (`/api/v2`) OpenAPI specs list the same responses for every
+compute, filesystem and task endpoint, and return each error as an RFC 9457 `Problem`
+(`type`, `status`, `title`, `detail`, `instance`; the facility's message, such as sbatch's
+refusal, is in `detail`). How the client (`clients/iri.py`) and the workflow treat each one:
+
+| HTTP | Spec meaning | Raised as | Client retry | Workflow |
+|---|---|---|---|---|
+| 400 | Invalid request parameters | `RequestRejected` | No | Run fails at once |
+| 401 | Unauthorized | `LoginRequired` | No | Step retried on the next pass (a refresh may fix the token), up to `max_attempts` |
+| 403 | Forbidden | `LoginRequired` | No | As 401 |
+| 403, 404 with `Unable to get sfapi data` | NERSC transient | `SfapiUnavailable` | Yes, `sfapi_retries` × `sfapi_retry_sleep`, job submission included | Step retried on the next pass |
+| 404 | Not Found | `RemoteError`; `RequestRejected` for job submission (unknown resource) | No (cleanup treats a missing path as removed) | Step retried on the next pass; job submission: run fails at once |
+| 405 | Method Not Allowed | `RequestRejected` | No | Run fails at once (often a wrong `iri.api_version`) |
+| 409 | Conflict | `RemoteError`; `RequestRejected` for job submission | Yes, `retries` × `retry_sleep` (not for job submission) | Step retried on the next pass; job submission: run fails at once |
+| 422 | Unprocessable Entity | `RequestRejected` | No | Run fails at once |
+| 429 | Too Many Requests | `RemoteError` | Quick resends (3, exponential backoff), then `retries` × `retry_sleep` | Step retried on the next pass |
+| 500, 502, 503, 504 | Server error, Service Unavailable, Gateway Timeout | `RemoteError` | As 429 | Step retried on the next pass |
+| 501 | Not Implemented | `RequestRejected` | No | Run fails at once (`validate` treats it as "not available here", e.g. ALCF `stat`) |
+| Other 4xx | Not in the specs | `RemoteError` | `retries` × `retry_sleep` | Step retried on the next pass |
+| Connection error, timeout | — | `RemoteError` | As 429 | Step retried on the next pass |
+| Task ended `failed`/`canceled` | — | `RemoteError` (`SfapiUnavailable` for the sfapi message) | `retries` × `retry_sleep`, except "No such file or directory" | Step retried on the next pass |
+| 304 | Not Modified | — | — | Not expected: the client sends no conditional requests |
+
+"Run fails at once" holds in every step except `monitor`: there the IRI job already exists,
+so the step keeps retrying instead of leaving the job untracked (`cancel` stops such a run).
+`RequestRejected` covers sbatch refusals such as "More resources requested than allowed for
+logical queue shared_milan_ss11 (1.0 requested core-equivalents > 0.5)" and "Job cost
+estimated at 0.33 node hours, your balance is 0.00 node hours ... Cannot proceed": resubmitting
+would get the same answer. All of these are `RemoteError` subclasses (CLI exit code 5), apart
+from `LoginRequired` (exit code 3).
+
+The HTTPS client (`clients/https.py`) has no `RequestRejected`: it retries every error except
+401/403, which are token errors and never retried.
+
+### 9.2 IRI API v1 and v2
+
+`iri.api_version` in `sites.yaml` chooses the API (default `v2` for `facility: alcf`, `v1` for
+`facility: nersc`). The client builds every URL as `<base_url>/api/<version>/...`. Specs:
+NERSC <https://api.iri.nersc.gov/openapi.json>, ALCF
+<https://api.alcf.anl.gov/api/v2/openapi.json> (docs:
+<https://docs.alcf.anl.gov/services/iri-api/#alcf-iri-api>).
+
+| Call (client method) | v1 (NERSC) | v2 (ALCF) |
+|---|---|---|
+| Submit job (`launch_job`) | `POST /api/v1/compute/job/{rid}`, JSON job spec | `POST /api/v2/compute/job/{rid}`, same body; optional `Idempotency-Key` header (not sent) |
+| Job status (`get_job`) | `GET /api/v1/compute/status/{rid}/{job_id}` | `GET /api/v2/compute/status/{rid}/{job_id}` |
+| List jobs (`get_jobs`) | `POST /api/v1/compute/status/{rid}`, query `offset`, `limit`, `historical`, `include_spec` | Same under `/api/v2` |
+| Cancel (`cancel_job`) | `DELETE /api/v1/compute/cancel/{rid}/{job_id}` | Same under `/api/v2` |
+| `stat` | `GET .../filesystem/stat/{rid}?path=&dereference=true` | `POST .../filesystem/stat/{rid}`, body `{"path", "dereference": true}` |
+| `ls` | `GET .../filesystem/ls/{rid}?path=&showHidden=true` | `POST .../filesystem/ls/{rid}`, body `{"path", "showHidden": true}` |
+| `rm` | `DELETE .../filesystem/rm/{rid}?path=` | `POST .../filesystem/rm/{rid}`, body `{"path"}` |
+| `download` | `GET .../filesystem/download/{rid}?path=` | `POST .../filesystem/download/{rid}`, body `{"path"}` |
+| `chmod` | `PUT .../filesystem/chmod/{rid}`, body `{"path", "mode"}` | `POST .../filesystem/chmod/{rid}`, same body |
+| `mkdir` | `POST .../filesystem/mkdir/{rid}`, body `{"path", "parent"}` | Same under `/api/v2` |
+| `upload` | `POST .../filesystem/upload/{rid}?path=`, multipart `file` | Same under `/api/v2` |
+| Task poll | `GET {task_uri}` (`/api/v1/task/{task_id}`) | `GET {task_uri}` (`/api/v2/task/{task_id}`) |
+| Token check (`validate`, `iri refresh`) | NERSC: `GET /api/v1/account/projects` | ALCF: `POST /api/v2/filesystem/ls/{Home rid}`, body `{"path": "/home/$USER/"}` |
+| Error body | RFC 9457 `Problem` | RFC 9457 `Problem` |
+
+The filesystem calls answer with a task (`task_id`, `task_uri`) in both versions; the client
+polls `task_uri` the same way. In v1, booleans go in the query as `true`; in v2 they are JSON
+booleans. `iri.validate_url`, when set, is always sent as a GET. Sending a v1 request to a v2
+server (or the reverse) typically gets 404 or 405, so check `iri.api_version` first when a
+site fails with those.
 
 ## 10. Security
 
