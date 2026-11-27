@@ -40,7 +40,7 @@ import yaml
 
 from . import cleanup as cleanup_mod
 from . import jobs, services
-from .errors import ConfigError, JobFailed, ValidationFailed
+from .errors import ConfigError, JobFailed, RequestRejected, ValidationFailed
 from .jobfile import resolve_job
 from .runindex import RunIndex
 from .runlog import run_log_path, run_logging
@@ -88,6 +88,10 @@ STEP_PASSED = ("done", "skipped")
 # errors that end a run at once; anything else (network, 5xx, token briefly missing) is
 # retried on the next pass, up to max_attempts per step
 FATAL = (ConfigError, ValidationFailed, JobFailed)
+# a request the remote API rejected (HTTP 400/405/422/501, e.g. sbatch refusing the job over a
+# queue limit or an empty allocation) would only be rejected again: it ends the run at once too,
+# except in UNLIMITED_RETRY_STEPS, where giving up would leave the IRI job untracked
+REJECTED = (RequestRejected,)
 DEFAULT_MAX_ATTEMPTS = 5
 # Steps retried without limit: the IRI job already exists, querying it is harmless, and giving
 # up would leave the job running untracked (no stage-out, no cleanup). `cancel` stops such a run.
@@ -563,6 +567,29 @@ HANDLERS = {
 }
 
 
+def _record_transient(config, state, name, exc, max_attempts, *, echo, raise_errors):
+    """A transient step error: record it; the step is retried on a later pass, up to max_attempts
+    (none for UNLIMITED_RETRY_STEPS), then the run fails. Re-raises exc if raise_errors."""
+    st = state.step(name)
+    attempts = int(st.get("attempts", 0)) + 1
+    st["attempts"] = attempts
+    state.data["last_error"] = {"step": name, "error": f"{type(exc).__name__}: {exc}", "at": _now(),
+                                "attempt": attempts}
+    state.save()
+    unlimited = name in UNLIMITED_RETRY_STEPS
+    limit = "no limit" if unlimited else max_attempts
+    log.warning("run %s step %s attempt %d/%s: %s", state.run_id, name, attempts, limit, exc)
+    if raise_errors or (not unlimited and attempts >= max_attempts):
+        state.set(name, "failed", error=str(exc))
+        if name == "upload":
+            _finish_transfer_failed(config, state, UPLOAD_FAILED, f"upload: {exc} (after {attempts} attempts)")
+        else:
+            state.finish(FAILED, f"{name}: {exc} (after {attempts} attempts)")
+        if raise_errors:
+            raise exc
+    echo(f"  {name}: error (attempt {attempts}/{limit}): {exc}")
+
+
 def _advance_locked(config, state, job, site, *, echo, raise_errors):
     if state.status in RUN_TERMINAL:
         return state
@@ -584,7 +611,10 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
                 state.save()
             if not passed:
                 return state  # step still in progress; the next pass checks it again
-        except FATAL as exc:
+        except Exception as exc:
+            if not (isinstance(exc, FATAL) or (isinstance(exc, REJECTED) and name not in UNLIMITED_RETRY_STEPS)):
+                _record_transient(config, state, name, exc, max_attempts, echo=echo, raise_errors=raise_errors)
+                return state
             if st.get("status") != "failed":
                 state.set(name, "failed", error=str(exc))
             state.finish(FAILED, f"{name}: {exc}")
@@ -592,25 +622,6 @@ def _advance_locked(config, state, job, site, *, echo, raise_errors):
             if raise_errors:
                 raise
             echo(f"  {name} failed: {exc}")
-            return state
-        except Exception as exc:  # transient: retry on a later pass
-            attempts = int(st.get("attempts", 0)) + 1
-            st["attempts"] = attempts
-            state.data["last_error"] = {"step": name, "error": f"{type(exc).__name__}: {exc}", "at": _now(),
-                                        "attempt": attempts}
-            state.save()
-            unlimited = name in UNLIMITED_RETRY_STEPS
-            limit = "no limit" if unlimited else max_attempts
-            log.warning("run %s step %s attempt %d/%s: %s", state.run_id, name, attempts, limit, exc)
-            if raise_errors or (not unlimited and attempts >= max_attempts):
-                state.set(name, "failed", error=str(exc))
-                if name == "upload":
-                    _finish_transfer_failed(config, state, UPLOAD_FAILED, f"upload: {exc} (after {attempts} attempts)")
-                else:
-                    state.finish(FAILED, f"{name}: {exc} (after {attempts} attempts)")
-                if raise_errors:
-                    raise
-            echo(f"  {name}: error (attempt {attempts}/{limit}): {exc}")
             return state
     if state.data.get("kind") == TRANSFER:  # every step passed: the transfer succeeded
         state.finish(FINISHED)

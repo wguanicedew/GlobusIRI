@@ -17,7 +17,7 @@ from globusiri.clients.http import TokenSource
 from globusiri.clients.https import GlobusHttpsClient
 from globusiri.clients.iri import IriClient
 from globusiri.config import PathMap
-from globusiri.errors import LoginRequired, RemoteError
+from globusiri.errors import LoginRequired, RemoteError, RequestRejected
 
 from .conftest import FakeResponse, FakeSession, write_access
 
@@ -50,10 +50,51 @@ def test_iri_retries_5xx_then_succeeds(tmp_path):
 
 def test_iri_4xx_retried_after_sleep_then_fails(tmp_path):
     # no quick resend for a 4xx, but the call is tried again after retry_sleep (3 attempts)
-    c = make_iri(tmp_path, [FakeResponse(400, {"detail": "bad"})] * 3)
-    with pytest.raises(RemoteError, match="failed 3 times"):
+    c = make_iri(tmp_path, [FakeResponse(409, {"detail": "busy"})] * 3)
+    with pytest.raises(RemoteError, match="failed 3 times") as err:
         c.get_job("J1")
+    assert not isinstance(err.value, RequestRejected)
     assert len(c.session.calls) == 3
+
+
+@pytest.mark.parametrize("status", [400, 405, 422, 501])
+def test_iri_rejected_request_not_retried(tmp_path, status):
+    c = make_iri(tmp_path, [FakeResponse(status, {"status": status, "detail": "bad"})])
+    with pytest.raises(RequestRejected) as err:
+        c.get_job("J1")
+    assert err.value.status == status
+    assert len(c.session.calls) == 1
+
+
+SBATCH_REFUSALS = [
+    "More resources requested than allowed for logical queue shared_milan_ss11 "
+    "(1.0 requested core-equivalents > 0.5)",
+    "Job cost estimated at 0.33 node hours, your balance is 0.00 node hours (Repo: 0.00 node hours). "
+    "Cannot proceed",
+]
+
+
+@pytest.mark.parametrize("detail", SBATCH_REFUSALS)
+def test_iri_submit_refused_by_sbatch_is_rejected(tmp_path, detail):
+    c = make_iri(tmp_path, [FakeResponse(400, {"type": "about:blank", "status": 400, "title": "Bad Request",
+                                               "detail": detail, "instance": "/api/v1/compute/job/rid"})])
+    with pytest.raises(RequestRejected, match="Cannot proceed|logical queue"):
+        c.launch_job({"a": 1})
+    assert len(c.session.calls) == 1
+
+
+@pytest.mark.parametrize("status", [404, 409])
+def test_iri_submit_404_409_rejected(tmp_path, status):
+    c = make_iri(tmp_path, [FakeResponse(status, {"detail": "no"})])
+    with pytest.raises(RequestRejected):
+        c.launch_job({"a": 1})
+    assert len(c.session.calls) == 1
+
+
+def test_iri_submit_sfapi_404_still_retried(tmp_path):
+    c = make_iri(tmp_path, [FakeResponse(404, {"detail": SFAPI}), FakeResponse(200, {"id": "J1"})])
+    assert c.launch_job({"a": 1})["id"] == "J1"
+    assert len(c.session.calls) == 2
 
 
 def test_iri_error_then_success(tmp_path):

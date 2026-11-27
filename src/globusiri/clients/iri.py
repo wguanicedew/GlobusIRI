@@ -22,7 +22,13 @@ Other failed calls (an HTTP error after the quick retries, or a failed task) are
 after `retry_sleep` seconds, up to `retry_attempts` attempts in all, except:
 
 * definite answers, which another attempt would only repeat: HTTP 404 and "No such file or
-  directory" (a missing path; cleanup relies on it), and HTTP 501 (not implemented);
+  directory" (a missing path; cleanup relies on it);
+* rejected requests (RequestRejected): HTTP 400, 405, 422 and 501. The NERSC and ALCF OpenAPI
+  specs answer every error with an RFC 9457 Problem; these codes mean the request itself is
+  wrong or unsupported (for example sbatch refusing a job: "More resources requested than
+  allowed for logical queue ...", "your balance is 0.00 node hours"), so the workflow fails
+  the run instead of retrying. For job submission, 404 (unknown resource) and 409 (a
+  conflicting submission) are rejections too;
 * job submission, where a lost reply may hide an accepted job: retrying could start the job
   twice (the workflow's submit step has its own attempts, and a job is never duplicated
   by the client);
@@ -38,13 +44,18 @@ from urllib.parse import quote, urlencode
 
 import requests
 
-from ..errors import LoginRequired, RemoteError
+from ..errors import LoginRequired, RemoteError, RequestRejected
 from .http import request_with_retry
 
 log = logging.getLogger("globusiri.iri")
 
 _TASK_TERMINAL_STATES = {"completed", "failed", "canceled"}
 SFAPI_ERROR = "Unable to get sfapi data"
+# HTTP statuses that reject the request itself (see the module docstring); 401/403 are token
+# problems (LoginRequired), 429/5xx other than 501 are transient
+REJECTED_STATUS = (400, 405, 422, 501)
+# extra statuses that reject a job submission: unknown resource, conflicting submission
+SUBMIT_REJECTED_STATUS = (404, 409)
 
 
 class SfapiUnavailable(RemoteError):
@@ -57,7 +68,8 @@ def _is_sfapi(detail):
 
 def _retryable(exc):
     """A RemoteError worth another attempt (see the module docstring)."""
-    return exc.status not in (404, 501) and "No such file or directory" not in str(exc)
+    return (not isinstance(exc, RequestRejected) and exc.status != 404
+            and "No such file or directory" not in str(exc))
 
 
 def _encode(segment):
@@ -114,6 +126,8 @@ class IriClient:
             raise SfapiUnavailable(f"IRI {what}: HTTP {resp.status_code}: {detail}", status=resp.status_code)
         if resp.status_code in (401, 403):
             raise LoginRequired(f"IRI {what}: HTTP {resp.status_code}: {detail}")
+        if resp.status_code in REJECTED_STATUS:
+            raise RequestRejected(f"IRI {what}: HTTP {resp.status_code}: {detail}", status=resp.status_code)
         raise RemoteError(f"IRI {what}: HTTP {resp.status_code}: {detail}", status=resp.status_code)
 
     def _json(self, resp, what):
@@ -181,7 +195,14 @@ class IriClient:
     def launch_job(self, job_spec, *, resource_id=None):
         url = f"{self.base_url}/api/v1/compute/job/{_encode(self._rid(resource_id))}"
         # sfapi errors only: another error may hide a job that was accepted
-        return self._api("POST", url, "submit job", json_body=job_spec, retry_errors=False)
+        try:
+            return self._api("POST", url, "submit job", json_body=job_spec, retry_errors=False)
+        except (SfapiUnavailable, RequestRejected):
+            raise
+        except RemoteError as exc:
+            if exc.status in SUBMIT_REJECTED_STATUS:
+                raise RequestRejected(str(exc), status=exc.status) from None
+            raise
 
     def get_job(self, job_id, *, resource_id=None):
         url = f"{self.base_url}/api/v1/compute/status/{_encode(self._rid(resource_id))}/{_encode(job_id)}"

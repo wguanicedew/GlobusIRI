@@ -476,7 +476,8 @@ runs retries it after `defaults.transfer_retry_interval`. After `defaults.transf
 failed retries, the run becomes `final_*` and is not retried again. `monitor()` without IDs
 otherwise picks up only `active` runs. `clean()` removes runs that ended long ago
 (`workflow.CLEANABLE` by default). A step error that cannot be fixed by retrying (failed transfer, failed
-validation, config error) fails the run. Any other error is recorded as `last_error`, and the
+validation, config error, or a request the IRI API rejected, `RequestRejected`; see section 9)
+fails the run. The exception is the `monitor` step: the job already exists there, so it keeps retrying. Any other error is recorded as `last_error`, and the
 step is retried on the next pass, up to `max_attempts` passes in a row. A per-run `flock` on
 `runs/<run_id>/.lock` lets several callers share a WORK_DIR (a daemon, a plugin, the CLI)
 without running the same step twice. One more caveat: a `submit` step that fails with a
@@ -690,8 +691,20 @@ final and never retried:
 
 - IRI HTTP 404 and "No such file or directory", since cleanup treats a missing path as
   already removed;
-- HTTP 501;
-- 401/403 token errors.
+- 401/403 token errors;
+- requests the IRI API rejected (`RequestRejected`, a `RemoteError`). Both the NERSC
+  (`/api/v1`) and ALCF (`/api/v2`) OpenAPI specs return every error as an RFC 9457 `Problem`
+  with the same codes: 400 (invalid request parameters), 405, 422 and 501 (not implemented).
+  These mean the request itself was refused, and sending it again gets the same answer. Job
+  submission also treats 404 (unknown resource) and 409 (a conflicting submission) as
+  rejections. A typical case is sbatch refusing the job, for example "More resources
+  requested than allowed for logical queue ..." or "your balance is 0.00 node hours ...
+  Cannot proceed". The workflow fails the run at once instead of resubmitting it
+  `max_attempts` times. In the `monitor` step it keeps retrying, because the job exists.
+
+Treated as transient (the quick resends, then `retry_sleep`, then the workflow's
+`max_attempts` passes): connection errors, 429, 500, 502, 503, 504, a failed IRI task, and 409
+outside job submission.
 
 IRI job submission is retried only on the sfapi error, because an accepted job whose reply
 was lost would otherwise be submitted twice. This applies to every IRI call, including job submission:

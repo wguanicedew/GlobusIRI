@@ -55,6 +55,12 @@ class RemoteError(GlobusIriError):
         self.status = status
 
 
+class RequestRejected(RemoteError):
+    """The remote API refused the request itself (e.g. IRI HTTP 400 when sbatch rejects a job
+    over a queue limit or an empty allocation). Sending it again gets the same answer, so the
+    workflow fails the run at once instead of retrying the step."""
+
+
 class JobFailed(GlobusIriError):
     exit_code = EXIT_JOB_FAILED
 

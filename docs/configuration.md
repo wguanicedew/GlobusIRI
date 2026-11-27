@@ -198,7 +198,7 @@ Then check the new site with `globusiri validate <SITE>`. Copy an example job fi
 | `debug` | Print redacted request traces | `iri_debug` |
 | `sfapi_retries` | Attempts per IRI call while NERSC answers `Unable to get sfapi data` (default `3`; at least 1) | — |
 | `sfapi_retry_sleep` | Wait between those attempts: seconds, or a duration such as `3s`, `1m` (default `3`) | — |
-| `retries` | Attempts in all for any other failed IRI call (an HTTP error, or a failed task), default `3`. Not retried: HTTP 404 and "No such file or directory" (missing path), HTTP 501 (not implemented), 401/403 (token), and job submission, where a lost reply could hide an accepted job | — |
+| `retries` | Attempts in all for any other failed IRI call (an HTTP error, or a failed task), default `3`. Not retried: HTTP 404 and "No such file or directory" (missing path), 401/403 (token), rejected requests (HTTP 400, 405, 422, 501, and also 404/409 for job submission; the run fails at once, for example when sbatch refuses the job), and job submission, where a lost reply could hide an accepted job | — |
 | `retry_sleep` | Wait between those attempts (default `10`) | — |
 
 ### `remote`

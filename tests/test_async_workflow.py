@@ -387,6 +387,41 @@ def test_upload_failed_then_monitor_retries_upload(env):
     assert any(c[0] == "launch" for c in iri.calls)
 
 
+def test_submit_rejected_fails_run_without_retry(env):
+    # sbatch refused the job (IRI HTTP 400): resubmitting gets the same answer
+    from globusiri.errors import RequestRejected
+
+    g, iri, gl = env
+    calls = []
+
+    def launch_job(spec, **kw):
+        calls.append(spec["name"])
+        raise RequestRejected("IRI submit job: HTTP 400: Job cost estimated at 0.33 node hours, your balance "
+                              "is 0.00 node hours (Repo: 0.00 node hours). Cannot proceed", status=400)
+
+    iri.launch_job = launch_job
+    r = g.submit("perlmutter_hello_job.yaml", run_id="R1", validate=False)
+    assert r["status"] == "failed" and "Cannot proceed" in r["message"]
+    assert r["steps"]["submit"]["status"] == "failed"
+    assert g.monitor() == {} and len(calls) == 1
+
+
+def test_monitor_keeps_retrying_rejected_status(env):
+    # the job exists: a rejected status query must not leave it untracked
+    from globusiri.errors import RequestRejected
+
+    g, iri, gl = env
+
+    def get_job(job_id, **kw):
+        raise RequestRejected("IRI status: HTTP 400: bad", status=400)
+
+    r = g.submit("perlmutter_hello_job.yaml", run_id="R2", validate=False)
+    iri.get_job = get_job
+    for _ in range(workflow.DEFAULT_MAX_ATTEMPTS + 1):
+        r = g.monitor(["R2"])["R2"]
+    assert r["status"] == "active" and r["steps"]["monitor"]["attempts"] > workflow.DEFAULT_MAX_ATTEMPTS
+
+
 def _failing_downloads(names):
     from globusiri.errors import RemoteError
 
